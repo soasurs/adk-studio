@@ -1,11 +1,27 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ADKEvent, Agent, Message, RunResponse, RunStreamEvent, StudioApp } from "./types";
 
 type SendShortcut = "enter" | "modified";
 type EventContent = NonNullable<ADKEvent["Content"]>;
 type ToolCall = NonNullable<EventContent["ToolCalls"]>[number];
 type ToolResult = NonNullable<EventContent["ToolResult"]>;
+type StudioSession = {
+  key: string;
+  id: string;
+  title: string;
+  messages: Message[];
+  traceEvents: RunStreamEvent[];
+};
+
+type SessionDraft = {
+  id: string;
+  title: string;
+};
+
+const initialSessionKey = "initial-session";
 
 export function App() {
   const [app, setApp] = useState<StudioApp | null>(null);
@@ -13,15 +29,24 @@ export function App() {
   const [selectedAgent, setSelectedAgent] = useState("");
   const [appID, setAppID] = useState("adk-studio");
   const [userID, setUserID] = useState("local-user");
-  const [sessionID, setSessionID] = useState("session-1");
+  const [sessions, setSessions] = useState<StudioSession[]>(() => [
+    createStudioSession({ id: newSessionID(), title: "New session" }, initialSessionKey)
+  ]);
+  const [activeSessionKey, setActiveSessionKey] = useState(initialSessionKey);
+  const [sessionDraft, setSessionDraft] = useState<SessionDraft>(() => newSessionDraft());
+  const [isCreateSessionOpen, setIsCreateSessionOpen] = useState(false);
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [traceEvents, setTraceEvents] = useState<RunStreamEvent[]>([]);
   const [sendShortcut, setSendShortcut] = useState<SendShortcut>("enter");
   const [streamingEnabled, setStreamingEnabled] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState("");
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const activeSession = sessions.find((session) => session.key === activeSessionKey) || sessions[0];
+  const sessionID = activeSession?.id || "";
+  const messages = activeSession?.messages || [];
+  const traceEvents = activeSession?.traceEvents || [];
+  const sessionDraftID = sessionDraft.id.trim();
+  const isSessionDraftDuplicate = sessions.some((session) => session.id === sessionDraftID);
 
   useEffect(() => {
     fetch("./api/app")
@@ -46,15 +71,85 @@ export function App() {
     list.scrollTop = list.scrollHeight;
   }, [messages]);
 
+  function openCreateSessionDialog() {
+    setSessionDraft(newSessionDraft(sessions.length + 1));
+    setIsCreateSessionOpen(true);
+    setError("");
+  }
+
+  function closeCreateSessionDialog() {
+    setIsCreateSessionOpen(false);
+  }
+
+  function createSession() {
+    const id = sessionDraftID;
+    if (!id || isSessionDraftDuplicate) {
+      return;
+    }
+    const session = createStudioSession({
+      id,
+      title: sessionDraft.title.trim() || "Untitled session"
+    });
+    setSessions((current) => [...current, session]);
+    setActiveSessionKey(session.key);
+    setIsCreateSessionOpen(false);
+    setError("");
+  }
+
+  function selectSession(sessionKey: string) {
+    setActiveSessionKey(sessionKey);
+    setError("");
+  }
+
+  function updateActiveSessionID(id: string) {
+    if (!activeSession) {
+      return;
+    }
+    updateSession(activeSession.key, (session) => ({
+      ...session,
+      id
+    }));
+  }
+
+  function syncSessionID(sessionKey: string, id?: string) {
+    if (!id) {
+      return;
+    }
+    updateSession(sessionKey, (session) => ({
+      ...session,
+      id
+    }));
+  }
+
+  function updateSession(sessionKey: string, updater: (session: StudioSession) => StudioSession) {
+    setSessions((current) => current.map((session) => (session.key === sessionKey ? updater(session) : session)));
+  }
+
+  function updateSessionMessages(sessionKey: string, updater: (messages: Message[]) => Message[]) {
+    updateSession(sessionKey, (session) => ({
+      ...session,
+      messages: updater(session.messages)
+    }));
+  }
+
+  function updateSessionTraceEvents(sessionKey: string, updater: (events: RunStreamEvent[]) => RunStreamEvent[]) {
+    updateSession(sessionKey, (session) => ({
+      ...session,
+      traceEvents: updater(session.traceEvents)
+    }));
+  }
+
   async function runAgent() {
     const prompt = input.trim();
-    if (!prompt || !selectedAgent || isRunning) {
+    const runSession = activeSession;
+    const runSessionID = runSession?.id.trim();
+    if (!prompt || !selectedAgent || isRunning || !runSession || !runSessionID) {
       return;
     }
 
     setError("");
     setIsRunning(true);
-    setMessages((current) => [
+    updateSessionMessages(runSession.key, (current) => [
       ...current,
       {
         id: `user-${Date.now()}`,
@@ -80,7 +175,7 @@ export function App() {
           agent_id: selectedAgent,
           app_name: appID,
           user_id: userID,
-          session_id: sessionID,
+          session_id: runSessionID,
           input: {
             role: "user",
             content: prompt
@@ -91,7 +186,7 @@ export function App() {
       if (streamingEnabled && response.ok && response.headers.get("Content-Type")?.includes("text/event-stream")) {
         await readRunEventStream(response, (event) => {
           if (event.session_id) {
-            setSessionID(event.session_id);
+            syncSessionID(runSession.key, event.session_id);
           }
           if (event.type === "done") {
             return;
@@ -101,9 +196,9 @@ export function App() {
           }
           const receivedEvent = markRunEventReceived(event);
           if (isTraceVisible(receivedEvent)) {
-            setTraceEvents((current) => [...current, receivedEvent]);
+            updateSessionTraceEvents(runSession.key, (current) => [...current, receivedEvent]);
           }
-          setMessages((current) => applyRunStreamEvent(current, receivedEvent));
+          updateSessionMessages(runSession.key, (current) => applyRunStreamEvent(current, receivedEvent));
         });
         return;
       }
@@ -114,8 +209,11 @@ export function App() {
         const eventError = [...events].reverse().find((event) => event.error)?.error;
         const message = ("error" in data && data.error) || eventError || "Run failed";
         setError(message);
-        setTraceEvents((current) => [...current, ...events.map(markRunEventReceived).filter(isTraceVisible)]);
-        setMessages((current) => [
+        updateSessionTraceEvents(runSession.key, (current) => [
+          ...current,
+          ...events.map(markRunEventReceived).filter(isTraceVisible)
+        ]);
+        updateSessionMessages(runSession.key, (current) => [
           ...current,
           {
             id: `error-${Date.now()}`,
@@ -129,13 +227,16 @@ export function App() {
 
       const run = data as RunResponse;
       const events = completeRunEvents(run.events);
-      setSessionID(run.session_id);
-      setTraceEvents((current) => [...current, ...events.map(markRunEventReceived).filter(isTraceVisible)]);
-      setMessages((current) => [...current, ...events.flatMap(eventToMessages)]);
+      syncSessionID(runSession.key, run.session_id);
+      updateSessionTraceEvents(runSession.key, (current) => [
+        ...current,
+        ...events.map(markRunEventReceived).filter(isTraceVisible)
+      ]);
+      updateSessionMessages(runSession.key, (current) => [...current, ...events.flatMap(eventToMessages)]);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Run failed";
       setError(message);
-      setMessages((current) => [
+      updateSessionMessages(runSession.key, (current) => [
         ...current,
         {
           id: `error-${Date.now()}`,
@@ -198,8 +299,19 @@ export function App() {
           </label>
         </section>
 
-        <section className="control-section">
-          <h2>Session</h2>
+        <section className="control-section session-section">
+          <div className="control-section-header">
+            <h2>Sessions</h2>
+            <button
+              className="icon-button"
+              type="button"
+              title="Create session"
+              aria-label="Create session"
+              onClick={openCreateSessionDialog}
+            >
+              +
+            </button>
+          </div>
           <label>
             App ID
             <input value={appID} onChange={(event) => setAppID(event.target.value)} />
@@ -208,12 +320,71 @@ export function App() {
             User ID
             <input value={userID} onChange={(event) => setUserID(event.target.value)} />
           </label>
+          <div className="session-list" aria-label="Sessions">
+            {sessions.map((session) => (
+              <button
+                key={session.key}
+                type="button"
+                className={`session-list-item${session.key === activeSessionKey ? " is-active" : ""}`}
+                onClick={() => selectSession(session.key)}
+              >
+                <span className="session-item-title">{sessionTitle(session)}</span>
+                <span className="session-item-id">{session.id || "Untitled session"}</span>
+                <span className="session-item-count">{messageCountLabel(session.messages.length)}</span>
+              </button>
+            ))}
+          </div>
           <label>
-            Session ID
-            <input value={sessionID} onChange={(event) => setSessionID(event.target.value)} />
+            Active Session ID
+            <input value={sessionID} onChange={(event) => updateActiveSessionID(event.target.value)} />
           </label>
         </section>
       </aside>
+
+      {isCreateSessionOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <form
+            className="session-dialog"
+            aria-label="Create session"
+            onSubmit={(event) => {
+              event.preventDefault();
+              createSession();
+            }}
+          >
+            <header>
+              <h2>Create Session</h2>
+              <button className="ghost-icon-button" type="button" aria-label="Close dialog" onClick={closeCreateSessionDialog}>
+                x
+              </button>
+            </header>
+            <label>
+              Title
+              <input
+                autoFocus
+                value={sessionDraft.title}
+                onChange={(event) => setSessionDraft((current) => ({ ...current, title: event.target.value }))}
+              />
+            </label>
+            <label>
+              Session ID
+              <input
+                value={sessionDraft.id}
+                onChange={(event) => setSessionDraft((current) => ({ ...current, id: event.target.value }))}
+                aria-invalid={isSessionDraftDuplicate || undefined}
+              />
+              {isSessionDraftDuplicate ? <span className="field-error">Session ID already exists.</span> : null}
+            </label>
+            <div className="dialog-actions">
+              <button type="button" className="secondary-button" onClick={closeCreateSessionDialog}>
+                Cancel
+              </button>
+              <button type="submit" disabled={!sessionDraftID || isSessionDraftDuplicate}>
+                Create
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
 
       <section className="playground" aria-label="Playground">
         <header className="workspace-header">
@@ -221,7 +392,7 @@ export function App() {
             <h2>Playground</h2>
             <p>Runs will execute against the selected registered agent.</p>
           </div>
-          <button type="button" onClick={runAgent} disabled={isRunning || !input.trim() || !selectedAgent}>
+          <button type="button" onClick={runAgent} disabled={isRunning || !input.trim() || !selectedAgent || !sessionID.trim()}>
             {isRunning ? "Running" : "Run"}
           </button>
         </header>
@@ -245,7 +416,7 @@ export function App() {
               {message.content ? (
                 <div className="response-block">
                   {message.reasoning ? <span>Response</span> : null}
-                  <p>{message.content}</p>
+                  <MarkdownContent content={message.content} />
                 </div>
               ) : null}
             </article>
@@ -269,7 +440,7 @@ export function App() {
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={handleComposerKeyDown}
             />
-            <button type="submit" disabled={isRunning || !input.trim() || !selectedAgent}>
+            <button type="submit" disabled={isRunning || !input.trim() || !selectedAgent || !sessionID.trim()}>
               {isRunning ? "Sending" : "Send"}
             </button>
           </div>
@@ -336,6 +507,49 @@ export function App() {
       </aside>
     </main>
   );
+}
+
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="markdown-content">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+    </div>
+  );
+}
+
+function createStudioSession(
+  draft: SessionDraft,
+  key = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+): StudioSession {
+  return {
+    key,
+    id: draft.id,
+    title: draft.title,
+    messages: [],
+    traceEvents: []
+  };
+}
+
+function newSessionDraft(index = 1): SessionDraft {
+  return {
+    id: newSessionID(),
+    title: `Session ${index}`
+  };
+}
+
+function newSessionID(): string {
+  return `session-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function sessionTitle(session: StudioSession): string {
+  return session.title || session.id || "Untitled session";
+}
+
+function messageCountLabel(count: number): string {
+  if (count === 1) {
+    return "1 message";
+  }
+  return `${count} messages`;
 }
 
 function completeRunEvents(events: RunStreamEvent[]): RunStreamEvent[] {
