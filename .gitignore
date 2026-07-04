@@ -1,0 +1,8 @@
+.DS_Store
+bin/
+/dist/
+frontend/dist/
+/studio
+node_modules/
+frontend/node_modules/
+frontend/tsconfig.tsbuildinfo
