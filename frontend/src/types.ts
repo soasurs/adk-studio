@@ -46,11 +46,12 @@ export type ADKEvent = {
 };
 
 export type RunStreamEvent = {
-  type: "event" | "error" | string;
+  type: "event" | "partial" | "error" | "done" | string;
   run_id: string;
   session_id?: string;
   event?: ADKEvent;
   error?: string;
+  received_at?: number;
 };
 
 export type RunResponse = {

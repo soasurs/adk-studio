@@ -36,9 +36,12 @@ github.com/soasurs/adk Runner + Agent + Tools + Session
 - 通过 `POST /api/runs` 执行选中的 agent。
 - 在 trace 面板里查看返回的 ADK events。
 - 在 UI 中分别展示 assistant message、reasoning content、tool call 和 tool result。
+- Studio UI 执行 agent 时，可以选择是否通过 SSE 实时接收 ADK events。
 - 使用固定高度的 React 工作台，包含侧边栏控制区、playground、trace inspector，以及可切换的发送快捷键。
 
-当前 run API 会返回一次完整运行收集到的 events，还没有暴露实时 SSE/WebSocket 流式接口。
+run API 会保留普通客户端使用的完整 JSON 响应。发送
+`Accept: text/event-stream` 的客户端会在每个 ADK event 产出时收到实时
+SSE frame。
 
 ## 构建
 
@@ -172,4 +175,6 @@ Studio 默认使用 Go 标准库 `log/slog` 的 text handler，把日志以 INFO
 }
 ```
 
-响应里会包含 `run_id`、当前 `session_id` 和收集到的 ADK events。
+默认响应里会包含 `run_id`、当前 `session_id` 和收集到的 ADK events。
+发送 `Accept: text/event-stream` 可以在运行过程中实时收到 `event`、`partial`、
+`error` 和 `done` SSE frames。完整 JSON 响应会省略 partial events。

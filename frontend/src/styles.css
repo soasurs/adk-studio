@@ -187,6 +187,11 @@ label {
   padding: 14px;
 }
 
+.message.is-partial {
+  border-style: dashed;
+  background: #fbfcfb;
+}
+
 .message span {
   display: block;
   margin-bottom: 8px;
@@ -196,7 +201,8 @@ label {
   text-transform: uppercase;
 }
 
-.message p {
+.message p,
+.response-block p {
   color: #36423f;
   line-height: 1.55;
   margin: 0;
@@ -204,9 +210,12 @@ label {
 }
 
 .reasoning-block {
-  border-top: 1px solid #e5ebe7;
-  margin-top: 12px;
-  padding-top: 10px;
+  border: 1px solid #dfe5e1;
+  border-left: 3px solid #9aa7a1;
+  border-radius: 6px;
+  background: #f7f9f8;
+  margin-top: 0;
+  padding: 10px 12px;
 }
 
 .reasoning-block summary {
@@ -225,6 +234,25 @@ label {
   margin: 8px 0 0;
   overflow: auto;
   white-space: pre-wrap;
+}
+
+.response-block {
+  margin-top: 0;
+}
+
+.reasoning-block + .response-block {
+  border-top: 1px solid #dfe5e1;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.response-block > span {
+  display: block;
+  margin-bottom: 8px;
+  color: #1f5d4f;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 .assistant-message {
@@ -289,8 +317,26 @@ label {
 .composer-toolbar {
   align-items: center;
   display: flex;
-  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
   min-height: 28px;
+}
+
+.stream-toggle {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+  margin-bottom: 0;
+  min-height: 28px;
+}
+
+.stream-toggle input {
+  accent-color: #1f5d4f;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  width: 16px;
 }
 
 .segmented-control {
@@ -365,24 +411,53 @@ label {
 }
 
 .trace-item summary {
-  align-items: center;
   cursor: pointer;
-  display: flex;
-  gap: 8px;
-  min-height: 40px;
-  padding: 0 12px;
+  min-height: 54px;
+  padding: 10px 12px;
 }
 
-.trace-item summary span {
-  color: #1f5d4f;
+.trace-summary-main {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.trace-summary-main strong {
+  color: #273330;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-meta {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.trace-meta span,
+.trace-meta time {
+  border-radius: 999px;
   font-size: 11px;
   font-weight: 700;
+  line-height: 1;
+  padding: 4px 7px;
+  white-space: nowrap;
+}
+
+.trace-meta span {
+  background: #eaf3ef;
+  color: #1f5d4f;
   text-transform: uppercase;
 }
 
-.trace-item summary strong {
-  font-size: 13px;
-  font-weight: 600;
+.trace-meta time {
+  background: #f3f5f2;
+  color: #5c6864;
+  font-variant-numeric: tabular-nums;
 }
 
 .trace-item pre {

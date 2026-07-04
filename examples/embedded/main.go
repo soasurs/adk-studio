@@ -57,7 +57,7 @@ func main() {
 			MaxTokens:   1024,
 		},
 		MaxIterations: 8,
-		Stream:        false,
+		Stream:        true,
 	})
 
 	app := studio.NewApp(studio.AppConfig{Name: "embedded-example", LogLevel: studio.LogLevelInfo})

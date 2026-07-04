@@ -42,11 +42,13 @@ This is still a small Studio skeleton, but the main loop is functional:
 - inspect returned ADK events in the trace panel.
 - display assistant messages, reasoning content, tool calls, and tool results
   as separate UI entries.
+- optionally stream live ADK events over SSE when the Studio UI runs an agent.
 - use a fixed-height React workbench with sidebar controls, playground, trace
   inspector, and configurable send shortcut.
 
-The run API currently returns a completed run response with collected events. It
-does not yet expose live SSE/WebSocket streaming.
+The run API keeps the completed JSON response for ordinary clients. Clients that
+send `Accept: text/event-stream` receive live SSE frames as each ADK event is
+produced.
 
 ## Build
 
@@ -184,5 +186,7 @@ Minimal run request:
 }
 ```
 
-The response includes a `run_id`, the active `session_id`, and the collected
-ADK events.
+By default the response includes a `run_id`, the active `session_id`, and the
+collected ADK events. Send `Accept: text/event-stream` to receive `event`,
+`partial`, `error`, and `done` SSE frames as the run progresses. Completed JSON
+responses omit partial events.

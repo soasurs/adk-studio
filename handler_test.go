@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/soasurs/adk/model"
 	"github.com/soasurs/adk/session/memory"
@@ -17,6 +19,10 @@ import (
 
 type testAgent struct{}
 type failingAgent struct{}
+type partialThenCompleteAgent struct{}
+type blockingStreamingAgent struct {
+	release chan struct{}
+}
 
 func (testAgent) Name() string {
 	return "test_agent"
@@ -57,6 +63,121 @@ func (failingAgent) Run(ctx context.Context, events []model.Event) iter.Seq2[*mo
 	return func(yield func(*model.Event, error) bool) {
 		yield(nil, errors.New("provider rejected history"))
 	}
+}
+
+func (partialThenCompleteAgent) Name() string {
+	return "partial_then_complete_agent"
+}
+
+func (partialThenCompleteAgent) Description() string {
+	return "Yields one partial event and one complete event."
+}
+
+func (partialThenCompleteAgent) Run(ctx context.Context, events []model.Event) iter.Seq2[*model.Event, error] {
+	return func(yield func(*model.Event, error) bool) {
+		if !yield(&model.Event{
+			Author: partialThenCompleteAgent{}.Name(),
+			Content: model.Content{
+				Role:    model.RoleAssistant,
+				Content: "partial",
+			},
+			Partial: true,
+		}, nil) {
+			return
+		}
+		yield(&model.Event{
+			Author: partialThenCompleteAgent{}.Name(),
+			Content: model.Content{
+				Role:    model.RoleAssistant,
+				Content: "complete",
+			},
+		}, nil)
+	}
+}
+
+func (blockingStreamingAgent) Name() string {
+	return "blocking_streaming_agent"
+}
+
+func (blockingStreamingAgent) Description() string {
+	return "Yields one partial event, then blocks until released."
+}
+
+func (a blockingStreamingAgent) Run(ctx context.Context, events []model.Event) iter.Seq2[*model.Event, error] {
+	return func(yield func(*model.Event, error) bool) {
+		if !yield(&model.Event{
+			Author: a.Name(),
+			Content: model.Content{
+				Role:    model.RoleAssistant,
+				Content: "first",
+			},
+			Partial: true,
+		}, nil) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			yield(nil, ctx.Err())
+			return
+		case <-a.release:
+		}
+		yield(&model.Event{
+			Author: a.Name(),
+			Content: model.Content{
+				Role:    model.RoleAssistant,
+				Content: "first second",
+			},
+		}, nil)
+	}
+}
+
+type flushRecorder struct {
+	mu      sync.Mutex
+	header  http.Header
+	code    int
+	body    bytes.Buffer
+	flushes chan struct{}
+}
+
+func newFlushRecorder() *flushRecorder {
+	return &flushRecorder{
+		header:  make(http.Header),
+		flushes: make(chan struct{}, 10),
+	}
+}
+
+func (r *flushRecorder) Header() http.Header {
+	return r.header
+}
+
+func (r *flushRecorder) WriteHeader(statusCode int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.code == 0 {
+		r.code = statusCode
+	}
+}
+
+func (r *flushRecorder) Write(data []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.code == 0 {
+		r.code = http.StatusOK
+	}
+	return r.body.Write(data)
+}
+
+func (r *flushRecorder) Flush() {
+	select {
+	case r.flushes <- struct{}{}:
+	default:
+	}
+}
+
+func (r *flushRecorder) snapshot() (int, string, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.code, r.header.Get("Content-Type"), r.body.String()
 }
 
 func TestHandlerListsRegisteredAgents(t *testing.T) {
@@ -137,6 +258,128 @@ func TestHandlerRunsRegisteredAgent(t *testing.T) {
 	}
 	if response.Events[0].Event.Content.Content != "Echo: hello" {
 		t.Fatalf("event content = %q, want Echo: hello", response.Events[0].Event.Content.Content)
+	}
+}
+
+func TestHandlerJSONRunOmitsPartialEvents(t *testing.T) {
+	app := NewApp(AppConfig{Name: "test"})
+	app.MustRegisterAgent(partialThenCompleteAgent{})
+	if err := app.UseSessionService(memory.NewMemorySessionService()); err != nil {
+		t.Fatalf("use session service: %v", err)
+	}
+
+	body := strings.NewReader(`{
+		"agent_id": "partial_then_complete_agent",
+		"app_name": "test",
+		"user_id": "dev",
+		"session_id": "session-1",
+		"input": {
+			"content": "hello"
+		}
+	}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", body)
+	NewHandler(app).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	var response RunResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(response.Events) != 1 {
+		t.Fatalf("events length = %d, want 1", len(response.Events))
+	}
+	event := response.Events[0].Event
+	if event == nil {
+		t.Fatal("event was nil")
+	}
+	if event.Partial {
+		t.Fatalf("event partial = true, want false")
+	}
+	if event.Content.Content != "complete" {
+		t.Fatalf("event content = %q, want complete", event.Content.Content)
+	}
+}
+
+func TestHandlerStreamsRunEventsWhenRequested(t *testing.T) {
+	app := NewApp(AppConfig{Name: "test"})
+	agent := blockingStreamingAgent{release: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			close(agent.release)
+		}
+	}()
+	app.MustRegisterAgent(agent)
+	if err := app.UseSessionService(memory.NewMemorySessionService()); err != nil {
+		t.Fatalf("use session service: %v", err)
+	}
+
+	body := strings.NewReader(`{
+		"agent_id": "blocking_streaming_agent",
+		"app_name": "test",
+		"user_id": "dev",
+		"session_id": "session-1",
+		"input": {
+			"content": "hello"
+		}
+	}`)
+	recorder := newFlushRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", body)
+	request.Header.Set("Accept", "text/event-stream")
+
+	done := make(chan struct{})
+	go func() {
+		NewHandler(app).ServeHTTP(recorder, request)
+		close(done)
+	}()
+
+	select {
+	case <-recorder.flushes:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first streamed flush")
+	}
+
+	status, contentType, streamedBody := recorder.snapshot()
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	if contentType != "text/event-stream" {
+		t.Fatalf("content type = %q, want text/event-stream", contentType)
+	}
+	if !strings.Contains(streamedBody, "event: partial\n") {
+		t.Fatalf("streamed body did not contain partial frame: %q", streamedBody)
+	}
+	if !strings.Contains(streamedBody, `"Partial":true`) {
+		t.Fatalf("streamed body did not contain partial event: %q", streamedBody)
+	}
+
+	select {
+	case <-done:
+		t.Fatal("handler completed before agent was released")
+	default:
+	}
+
+	close(agent.release)
+	released = true
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for streamed run to complete")
+	}
+
+	_, _, finalBody := recorder.snapshot()
+	if !strings.Contains(finalBody, "event: done\n") {
+		t.Fatalf("streamed body did not contain done frame: %q", finalBody)
+	}
+	if !strings.Contains(finalBody, "event: event\n") {
+		t.Fatalf("streamed body did not contain complete event frame: %q", finalBody)
+	}
+	if !strings.Contains(finalBody, "first second") {
+		t.Fatalf("streamed body did not contain complete event: %q", finalBody)
 	}
 }
 
