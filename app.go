@@ -2,6 +2,7 @@ package studio
 
 import (
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -13,11 +14,17 @@ import (
 
 type AppConfig struct {
 	Name string
+	// LogLevel controls the default Studio logger when Logger is nil.
+	// The zero value logs at INFO.
+	LogLevel LogLevel
+	// Logger overrides the default Studio logger. When set, LogLevel is ignored.
+	Logger *slog.Logger
 }
 
 type App struct {
 	mu       sync.RWMutex
 	name     string
+	logger   *slog.Logger
 	agents   map[string]adkagent.Agent
 	sessions session.SessionService
 }
@@ -27,8 +34,13 @@ func NewApp(config AppConfig) *App {
 	if name == "" {
 		name = "adk-studio"
 	}
+	logger := config.Logger
+	if logger == nil {
+		logger = NewLogger(nil, config.LogLevel)
+	}
 	return &App{
 		name:   name,
+		logger: logger,
 		agents: make(map[string]adkagent.Agent),
 	}
 }
@@ -37,6 +49,13 @@ func (a *App) Name() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.name
+}
+
+func (a *App) loggerForRun() *slog.Logger {
+	if a == nil || a.logger == nil {
+		return slog.Default()
+	}
+	return a.logger
 }
 
 func (a *App) RegisterAgent(agent adkagent.Agent) error {

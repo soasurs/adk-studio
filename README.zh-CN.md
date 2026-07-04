@@ -123,7 +123,10 @@ import (
 func main() {
     ctx := context.Background()
 
-    app := studio.NewApp(studio.AppConfig{Name: "demo"})
+    app := studio.NewApp(studio.AppConfig{
+        Name:     "demo",
+        LogLevel: studio.LogLevelInfo,
+    })
     app.MustRegisterAgent(myAgent)
     if err := app.UseSessionService(memory.NewMemorySessionService()); err != nil {
         log.Fatal(err)
@@ -140,6 +143,11 @@ func main() {
 ```go
 http.ListenAndServe(":18080", studio.NewHandler(app))
 ```
+
+Studio 默认使用 Go 标准库 `log/slog` 的 text handler，把日志以 INFO 级别写到
+`stderr`。每次 run 返回的 ADK event 都会按 INFO 打印。嵌入时可以通过
+`LogLevelDebug`、`LogLevelWarn`、`LogLevelError`、`LogLevelOff` 调整等级，也可以在
+`AppConfig.Logger` 里传入自定义 `*slog.Logger`。
 
 ## HTTP APIs
 

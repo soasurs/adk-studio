@@ -135,7 +135,10 @@ import (
 func main() {
     ctx := context.Background()
 
-    app := studio.NewApp(studio.AppConfig{Name: "demo"})
+    app := studio.NewApp(studio.AppConfig{
+        Name:     "demo",
+        LogLevel: studio.LogLevelInfo,
+    })
     app.MustRegisterAgent(myAgent)
     if err := app.UseSessionService(memory.NewMemorySessionService()); err != nil {
         log.Fatal(err)
@@ -152,6 +155,11 @@ For more control, mount the handler yourself:
 ```go
 http.ListenAndServe(":18080", studio.NewHandler(app))
 ```
+
+Studio logs to `stderr` with Go's `log/slog` text handler at INFO level by
+default. Every ADK event returned by a run is logged at INFO. Use
+`LogLevelDebug`, `LogLevelWarn`, `LogLevelError`, or `LogLevelOff`, or pass a
+custom `*slog.Logger` in `AppConfig.Logger` when embedding Studio.
 
 ## HTTP APIs
 

@@ -1,6 +1,7 @@
 package studio
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -136,6 +137,80 @@ func TestHandlerRunsRegisteredAgent(t *testing.T) {
 	}
 	if response.Events[0].Event.Content.Content != "Echo: hello" {
 		t.Fatalf("event content = %q, want Echo: hello", response.Events[0].Event.Content.Content)
+	}
+}
+
+func TestHandlerLogsRunEventsAtInfo(t *testing.T) {
+	var logs bytes.Buffer
+	app := NewApp(AppConfig{
+		Name:   "test",
+		Logger: NewLogger(&logs, LogLevelInfo),
+	})
+	app.MustRegisterAgent(testAgent{})
+	if err := app.UseSessionService(memory.NewMemorySessionService()); err != nil {
+		t.Fatalf("use session service: %v", err)
+	}
+
+	body := strings.NewReader(`{
+		"agent_id": "test_agent",
+		"app_name": "test",
+		"user_id": "dev",
+		"session_id": "session-1",
+		"input": {
+			"content": "hello"
+		}
+	}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", body)
+	NewHandler(app).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	output := logs.String()
+	if !strings.Contains(output, "level=INFO") {
+		t.Fatalf("expected INFO log, got %q", output)
+	}
+	if !strings.Contains(output, `msg="adk studio event"`) {
+		t.Fatalf("expected event log, got %q", output)
+	}
+	if !strings.Contains(output, "author=test_agent") {
+		t.Fatalf("expected event author in log, got %q", output)
+	}
+	if !strings.Contains(output, "Echo: hello") {
+		t.Fatalf("expected serialized event content in log, got %q", output)
+	}
+}
+
+func TestHandlerSuppressesRunEventsAboveInfo(t *testing.T) {
+	var logs bytes.Buffer
+	app := NewApp(AppConfig{
+		Name:   "test",
+		Logger: NewLogger(&logs, LogLevelWarn),
+	})
+	app.MustRegisterAgent(testAgent{})
+	if err := app.UseSessionService(memory.NewMemorySessionService()); err != nil {
+		t.Fatalf("use session service: %v", err)
+	}
+
+	body := strings.NewReader(`{
+		"agent_id": "test_agent",
+		"app_name": "test",
+		"user_id": "dev",
+		"session_id": "session-1",
+		"input": {
+			"content": "hello"
+		}
+	}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", body)
+	NewHandler(app).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if output := logs.String(); strings.Contains(output, "adk studio event") {
+		t.Fatalf("expected WARN logger to suppress event log, got %q", output)
 	}
 }
 

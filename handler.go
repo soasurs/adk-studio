@@ -116,21 +116,45 @@ func (h *Handler) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := ensureSession(r.Context(), sessionService, req); err != nil {
+		h.app.loggerForRun().ErrorContext(r.Context(), "adk studio session setup failed",
+			"agent_id", req.AgentID,
+			"session_id", req.SessionID,
+			"error", err,
+		)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	adkRunner, err := runner.New(agent, sessionService)
 	if err != nil {
+		h.app.loggerForRun().ErrorContext(r.Context(), "adk studio runner setup failed",
+			"agent_id", req.AgentID,
+			"session_id", req.SessionID,
+			"error", err,
+		)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	runID := newRunID()
+	h.app.loggerForRun().InfoContext(r.Context(), "adk studio run started",
+		"run_id", runID,
+		"agent_id", req.AgentID,
+		"app_name", req.AppName,
+		"user_id", req.UserID,
+		"session_id", req.SessionID,
+	)
 	events := make([]RunStreamEvent, 0)
 	for event, err := range adkRunner.Run(r.Context(), req.SessionID, req.Input) {
 		if err != nil {
 			errMsg := err.Error()
+			h.app.loggerForRun().ErrorContext(r.Context(), "adk studio run failed",
+				"run_id", runID,
+				"agent_id", req.AgentID,
+				"session_id", req.SessionID,
+				"event_count", len(events),
+				"error", err,
+			)
 			writeJSON(w, http.StatusInternalServerError, RunResponse{
 				RunID:     runID,
 				SessionID: req.SessionID,
@@ -144,6 +168,7 @@ func (h *Handler) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		logRunEvent(r.Context(), h.app.loggerForRun(), runID, req.SessionID, req.AgentID, event)
 		events = append(events, RunStreamEvent{
 			Type:      "event",
 			RunID:     runID,
@@ -151,6 +176,12 @@ func (h *Handler) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 			Event:     event,
 		})
 	}
+	h.app.loggerForRun().InfoContext(r.Context(), "adk studio run completed",
+		"run_id", runID,
+		"agent_id", req.AgentID,
+		"session_id", req.SessionID,
+		"event_count", len(events),
+	)
 
 	writeJSON(w, http.StatusOK, RunResponse{
 		RunID:     runID,

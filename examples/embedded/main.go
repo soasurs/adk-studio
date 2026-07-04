@@ -60,7 +60,7 @@ func main() {
 		Stream:        false,
 	})
 
-	app := studio.NewApp(studio.AppConfig{Name: "embedded-example"})
+	app := studio.NewApp(studio.AppConfig{Name: "embedded-example", LogLevel: studio.LogLevelInfo})
 	app.MustRegisterAgent(agent)
 	if err := app.UseSessionService(memory.NewMemorySessionService()); err != nil {
 		log.Fatal(err)
