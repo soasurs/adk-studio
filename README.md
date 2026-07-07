@@ -74,8 +74,14 @@ handler.
 
 ## Run the Example
 
-The embedded example registers a DeepSeek-backed `llmagent` with local fixture
-tools and Exa MCP search tools.
+The embedded example registers three ADK agent types:
+
+- `deepseek_agent`: a DeepSeek-backed `llmagent` with local fixture tools and
+  Exa MCP search tools.
+- `sequential_pipeline_agent`: a `sequentialagent` that runs a researcher
+  sub-agent with a real `read_file` tool and then a writer sub-agent.
+- `parallel_review_agent`: a `parallelagent` that fans out to two reviewer
+  sub-agents and merges their final answers.
 
 ```bash
 export DEEPSEEK_API_KEY=...
@@ -93,10 +99,19 @@ Useful prompts:
 ```text
 帮我检查 Alex 的订单，看看为什么发货延迟，并给一个处理建议。
 用 Exa 搜索 github.com/soasurs/adk 的相关信息，并总结来源。
+请用 read_file 读取 README.md 和 examples/embedded/main.go，然后分析这个示例展示了哪些 agent 类型。
+请评估：把所有 session 都放在内存里是否适合生产环境？
 ```
 
-The local tool prompt is designed to force multiple tool-call rounds:
+The first two prompts are intended for `deepseek_agent`. The local tool prompt
+is designed to force multiple tool-call rounds:
 `lookup_customer` → `inspect_order` → `recommend_resolution`.
+
+Use the third prompt with `sequential_pipeline_agent` to see the researcher
+sub-agent call `read_file` before handing its findings to the writer. The
+`read_file` tool is limited to the current working directory where the example
+process starts. Use the fourth prompt with `parallel_review_agent` to see the
+merged fan-out result.
 
 ## Frontend Development
 

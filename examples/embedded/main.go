@@ -3,15 +3,20 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	studio "github.com/soasurs/adk-studio"
+	adkagent "github.com/soasurs/adk/agent"
 	"github.com/soasurs/adk/agent/llmagent"
+	"github.com/soasurs/adk/agent/parallelagent"
+	"github.com/soasurs/adk/agent/sequentialagent"
 	"github.com/soasurs/adk/model"
 	"github.com/soasurs/adk/model/deepseek"
 	"github.com/soasurs/adk/session/memory"
@@ -20,6 +25,11 @@ import (
 )
 
 const exaMCPEndpoint = "https://mcp.exa.ai/mcp"
+
+const (
+	defaultReadFileMaxBytes = 16 * 1024
+	hardReadFileMaxBytes    = 64 * 1024
+)
 
 func main() {
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
@@ -33,8 +43,14 @@ func main() {
 	}
 
 	ctx := context.Background()
+	workspaceRoot, err := os.Getwd()
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	llm := deepseek.New(apiKey, modelName)
+	newLLM := func() model.LLM {
+		return deepseek.New(apiKey, modelName)
+	}
 	localTools, err := toolLabTools()
 	if err != nil {
 		log.Fatal(err)
@@ -46,9 +62,53 @@ func main() {
 	defer exaToolSet.Close()
 
 	tools := append(localTools, exaTools...)
-	agent := llmagent.New(llmagent.Config{
+	agents, err := exampleAgents(newLLM, tools, workspaceRoot)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	app := studio.NewApp(studio.AppConfig{Name: "embedded-example", LogLevel: studio.LogLevelInfo})
+	for _, a := range agents {
+		app.MustRegisterAgent(a)
+	}
+	if err := app.UseSessionService(memory.NewMemorySessionService()); err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("ADK Studio example listening on http://127.0.0.1:18080 with DeepSeek model %s", modelName)
+	log.Printf("Registered agents: %s", strings.Join(agentNames(agents), ", "))
+	log.Printf("Registered deepseek_agent tools: %s", strings.Join(toolNames(tools), ", "))
+	log.Printf("sequential_pipeline_agent read_file root: %s", workspaceRoot)
+	log.Printf("Try deepseek_agent local tools: 帮我检查 Alex 的订单，看看为什么发货延迟，并给一个处理建议。")
+	log.Printf("Try deepseek_agent Exa MCP: 用 Exa 搜索 github.com/soasurs/adk 的相关信息，并总结来源。")
+	log.Printf("Try sequential_pipeline_agent: 请用 read_file 读取 README.md 和 examples/embedded/main.go，然后分析这个示例展示了哪些 agent 类型。")
+	log.Printf("Try parallel_review_agent: 请评估：把所有 session 都放在内存里是否适合生产环境？")
+	if err := studio.Serve(ctx, app, ":18080"); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func exampleAgents(newLLM func() model.LLM, tools []tool.Tool, workspaceRoot string) ([]adkagent.Agent, error) {
+	sequential, err := newSequentialPipelineAgent(newLLM, workspaceRoot)
+	if err != nil {
+		return nil, err
+	}
+	parallel, err := newParallelReviewAgent(newLLM)
+	if err != nil {
+		return nil, err
+	}
+
+	return []adkagent.Agent{
+		newToolLabAgent(newLLM(), tools),
+		sequential,
+		parallel,
+	}, nil
+}
+
+func newToolLabAgent(llm model.LLM, tools []tool.Tool) adkagent.Agent {
+	return llmagent.New(llmagent.Config{
 		Name:        "deepseek_agent",
-		Description: "DeepSeek-backed ADK assistant with local fixtures and Exa MCP search.",
+		Description: "DeepSeek-backed LLMAgent with local fixtures and Exa MCP search.",
 		Model:       llm,
 		Tools:       tools,
 		Instruction: toolLabInstruction,
@@ -59,20 +119,74 @@ func main() {
 		MaxIterations: 8,
 		Stream:        true,
 	})
+}
 
-	app := studio.NewApp(studio.AppConfig{Name: "embedded-example", LogLevel: studio.LogLevelInfo})
-	app.MustRegisterAgent(agent)
-	if err := app.UseSessionService(memory.NewMemorySessionService()); err != nil {
-		log.Fatal(err)
+func newSequentialPipelineAgent(newLLM func() model.LLM, workspaceRoot string) (adkagent.Agent, error) {
+	readFile, err := newReadFileTool(workspaceRoot)
+	if err != nil {
+		return nil, err
 	}
 
-	log.Printf("ADK Studio example listening on http://127.0.0.1:18080 with DeepSeek model %s", modelName)
-	log.Printf("Registered tools: %s", strings.Join(toolNames(tools), ", "))
-	log.Printf("Try local tools: 帮我检查 Alex 的订单，看看为什么发货延迟，并给一个处理建议。")
-	log.Printf("Try Exa MCP: 用 Exa 搜索 github.com/soasurs/adk 的相关信息，并总结来源。")
-	if err := studio.Serve(ctx, app, ":18080"); err != nil {
-		log.Fatal(err)
-	}
+	researcher := llmagent.New(llmagent.Config{
+		Name:        "pipeline_researcher",
+		Description: "First step in the sequential pipeline; reads files and prepares a handoff note.",
+		Model:       newLLM(),
+		Tools:       []tool.Tool{readFile},
+		Instruction: sequentialResearchInstruction,
+		GenerateConfig: &model.GenerateConfig{
+			Temperature: 0.2,
+			MaxTokens:   1024,
+		},
+		MaxIterations: 6,
+		Stream:        true,
+	})
+	writer := llmagent.New(llmagent.Config{
+		Name:        "pipeline_writer",
+		Description: "Second step in the sequential pipeline; writes the final answer.",
+		Model:       newLLM(),
+		Instruction: sequentialWriterInstruction,
+		GenerateConfig: &model.GenerateConfig{
+			Temperature: 0.3,
+			MaxTokens:   768,
+		},
+		Stream: true,
+	})
+
+	return sequentialagent.New(sequentialagent.Config{
+		Name:        "sequential_pipeline_agent",
+		Description: "SequentialAgent example that runs a researcher and writer in order.",
+		Agents:      []adkagent.Agent{researcher, writer},
+	})
+}
+
+func newParallelReviewAgent(newLLM func() model.LLM) (adkagent.Agent, error) {
+	riskReviewer := llmagent.New(llmagent.Config{
+		Name:        "risk_reviewer",
+		Description: "Parallel reviewer focused on risks and missing checks.",
+		Model:       newLLM(),
+		Instruction: parallelRiskInstruction,
+		GenerateConfig: &model.GenerateConfig{
+			Temperature: 0.2,
+			MaxTokens:   512,
+		},
+	})
+	solutionReviewer := llmagent.New(llmagent.Config{
+		Name:        "solution_reviewer",
+		Description: "Parallel reviewer focused on a direct implementation path.",
+		Model:       newLLM(),
+		Instruction: parallelSolutionInstruction,
+		GenerateConfig: &model.GenerateConfig{
+			Temperature: 0.3,
+			MaxTokens:   512,
+		},
+	})
+
+	return parallelagent.New(parallelagent.Config{
+		Name:        "parallel_review_agent",
+		Description: "ParallelAgent example that fans out to two reviewers and merges their answers.",
+		Agents:      []adkagent.Agent{riskReviewer, solutionReviewer},
+		MergeFunc:   mergeParallelReviewOutputs,
+	})
 }
 
 const toolLabInstruction = `You are an ADK Studio tool-call test agent.
@@ -86,6 +200,37 @@ For any user request about a customer, order, delivery, refund, or the tool-call
 For any request that asks to search, research, verify current information, or use Exa, call the available Exa MCP search tool before answering. Prefer citing URLs returned by the tool.
 
 Do not guess IDs or skip steps. Use only one tool call per assistant turn so ADK Studio can show multiple tool-call rounds.`
+
+const sequentialResearchInstruction = `You are the research step in an ADK SequentialAgent example.
+
+You have a real read_file tool that reads files from the example process working directory.
+When the user asks you to read, inspect, review, or analyze files, call read_file before writing your handoff.
+Read one file per tool call. Do not claim that you read a file unless read_file returned its content.
+
+Analyze the user's request and produce a compact handoff note in Chinese with:
+- the likely goal,
+- files actually read, when any,
+- key facts or assumptions,
+- risks or missing information,
+- a recommended direction.
+
+Do not write the final answer.`
+
+const sequentialWriterInstruction = `You are the final response step in an ADK SequentialAgent example.
+
+You receive the original user request, the previous assistant handoff note, and a "Please proceed." user message.
+Use the handoff as context, then answer the original user request in Chinese.
+Keep the answer concise, concrete, and action-oriented.`
+
+const parallelRiskInstruction = `You are an independent reviewer in an ADK ParallelAgent example.
+
+Inspect the user's request for risks, ambiguity, hidden assumptions, and missing checks.
+Answer in Chinese with at most three bullets.`
+
+const parallelSolutionInstruction = `You are an independent solution reviewer in an ADK ParallelAgent example.
+
+Propose a direct implementation or decision path for the user's request.
+Answer in Chinese with at most three bullets.`
 
 type apiKeyTransport struct {
 	base   http.RoundTripper
@@ -137,6 +282,103 @@ type recommendResolutionOutput struct {
 	Recommendation string   `json:"recommendation"`
 	NextSteps      []string `json:"next_steps"`
 	Confidence     string   `json:"confidence"`
+}
+
+type readFileInput struct {
+	Path     string `json:"path" jsonschema:"Workspace-relative file path to read. Absolute paths and paths outside the workspace are rejected."`
+	MaxBytes int64  `json:"max_bytes,omitempty" jsonschema:"Optional maximum number of bytes to return. Defaults to 16384 and is capped at 65536."`
+}
+
+type readFileOutput struct {
+	Path          string `json:"path"`
+	TotalBytes    int64  `json:"total_bytes"`
+	ReturnedBytes int64  `json:"returned_bytes"`
+	Truncated     bool   `json:"truncated"`
+	Content       string `json:"content"`
+}
+
+func newReadFileTool(workspaceRoot string) (tool.Tool, error) {
+	absRoot, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve read_file root: %w", err)
+	}
+
+	return tool.NewFunc(tool.Definition{
+		Name:        "read_file",
+		Description: "Read a UTF-8 text file from the example process working directory. Absolute paths and paths outside that root are rejected.",
+	}, func(ctx context.Context, input readFileInput) (readFileOutput, error) {
+		return readFile(ctx, absRoot, input)
+	})
+}
+
+func readFile(ctx context.Context, workspaceRoot string, input readFileInput) (readFileOutput, error) {
+	select {
+	case <-ctx.Done():
+		return readFileOutput{}, ctx.Err()
+	default:
+	}
+
+	requestedPath := strings.TrimSpace(input.Path)
+	if requestedPath == "" {
+		return readFileOutput{}, fmt.Errorf("path is required")
+	}
+	if filepath.IsAbs(requestedPath) {
+		return readFileOutput{}, fmt.Errorf("absolute paths are not allowed")
+	}
+
+	cleanPath := filepath.Clean(requestedPath)
+	if cleanPath == "." {
+		return readFileOutput{}, fmt.Errorf("path must point to a file")
+	}
+	if cleanPath == ".." || strings.HasPrefix(cleanPath, ".."+string(filepath.Separator)) {
+		return readFileOutput{}, fmt.Errorf("paths outside the read_file root are not allowed")
+	}
+
+	maxBytes := input.MaxBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultReadFileMaxBytes
+	}
+	if maxBytes > hardReadFileMaxBytes {
+		maxBytes = hardReadFileMaxBytes
+	}
+
+	root, err := os.OpenRoot(workspaceRoot)
+	if err != nil {
+		return readFileOutput{}, fmt.Errorf("open read_file root: %w", err)
+	}
+	defer root.Close()
+
+	info, err := root.Stat(cleanPath)
+	if err != nil {
+		return readFileOutput{}, fmt.Errorf("stat %q: %w", cleanPath, err)
+	}
+	if info.IsDir() {
+		return readFileOutput{}, fmt.Errorf("%q is a directory", cleanPath)
+	}
+
+	file, err := root.Open(cleanPath)
+	if err != nil {
+		return readFileOutput{}, fmt.Errorf("open %q: %w", cleanPath, err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return readFileOutput{}, fmt.Errorf("read %q: %w", cleanPath, err)
+	}
+
+	truncated := int64(len(data)) > maxBytes
+	if truncated {
+		data = data[:maxBytes]
+	}
+
+	return readFileOutput{
+		Path:          filepath.ToSlash(cleanPath),
+		TotalBytes:    info.Size(),
+		ReturnedBytes: int64(len(data)),
+		Truncated:     truncated,
+		Content:       string(data),
+	}, nil
 }
 
 func toolLabTools() ([]tool.Tool, error) {
@@ -207,6 +449,41 @@ func toolNames(tools []tool.Tool) []string {
 		names = append(names, t.Definition().Name)
 	}
 	return names
+}
+
+func agentNames(agents []adkagent.Agent) []string {
+	names := make([]string, 0, len(agents))
+	for _, a := range agents {
+		names = append(names, a.Name())
+	}
+	return names
+}
+
+func mergeParallelReviewOutputs(results []parallelagent.AgentOutput) model.Event {
+	parts := make([]string, 0, len(results))
+	for _, result := range results {
+		if content := lastAssistantText(result.Events); content != "" {
+			parts = append(parts, fmt.Sprintf("[%s]\n%s", result.Name, content))
+		}
+	}
+
+	return model.Event{
+		Author: "parallel_review_agent",
+		Content: model.Content{
+			Role:    model.RoleAssistant,
+			Content: strings.Join(parts, "\n\n"),
+		},
+	}
+}
+
+func lastAssistantText(events []model.Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		content := events[i].Content
+		if content.Role == model.RoleAssistant && content.Content != "" {
+			return content.Content
+		}
+	}
+	return ""
 }
 
 func lookupCustomer(_ context.Context, input lookupCustomerInput) (lookupCustomerOutput, error) {
