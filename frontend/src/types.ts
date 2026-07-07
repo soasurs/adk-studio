@@ -4,10 +4,17 @@ export type Agent = {
   description?: string;
 };
 
+export type SessionBackend = {
+  id: string;
+  name: string;
+  description?: string;
+};
+
 export type StudioApp = {
   name: string;
   agent_count: number;
   has_session_service: boolean;
+  session_backend?: SessionBackend;
 };
 
 export type ADKContent = {

@@ -22,11 +22,12 @@ type AppConfig struct {
 }
 
 type App struct {
-	mu       sync.RWMutex
-	name     string
-	logger   *slog.Logger
-	agents   map[string]adkagent.Agent
-	sessions session.SessionService
+	mu             sync.RWMutex
+	name           string
+	logger         *slog.Logger
+	agents         map[string]adkagent.Agent
+	sessions       session.SessionService
+	sessionBackend SessionBackendSummary
 }
 
 func NewApp(config AppConfig) *App {
@@ -83,13 +84,22 @@ func (a *App) MustRegisterAgent(agent adkagent.Agent) {
 }
 
 func (a *App) UseSessionService(service session.SessionService) error {
+	return a.UseSessionServiceWithBackend(service, inferSessionBackend(service))
+}
+
+func (a *App) UseSessionServiceWithBackend(service session.SessionService, backend SessionBackendSummary) error {
 	if isNil(service) {
 		return fmt.Errorf("studio: session service must not be nil")
+	}
+	backend = normalizeSessionBackend(backend)
+	if backend.ID == "" {
+		return fmt.Errorf("studio: session backend id must not be empty")
 	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sessions = service
+	a.sessionBackend = backend
 	return nil
 }
 
@@ -146,6 +156,16 @@ func (a *App) hasSessionService() bool {
 	return a.sessions != nil
 }
 
+func (a *App) sessionBackendSummary() *SessionBackendSummary {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.sessions == nil || a.sessionBackend.ID == "" {
+		return nil
+	}
+	backend := a.sessionBackend
+	return &backend
+}
+
 func isNil(v any) bool {
 	if v == nil {
 		return true
@@ -156,5 +176,52 @@ func isNil(v any) bool {
 		return value.IsNil()
 	default:
 		return false
+	}
+}
+
+func normalizeSessionBackend(backend SessionBackendSummary) SessionBackendSummary {
+	backend.ID = strings.TrimSpace(backend.ID)
+	backend.Name = strings.TrimSpace(backend.Name)
+	backend.Description = strings.TrimSpace(backend.Description)
+	if backend.ID == "" {
+		backend.ID = backend.Name
+	}
+	if backend.Name == "" {
+		backend.Name = backend.ID
+	}
+	return backend
+}
+
+func inferSessionBackend(service session.SessionService) SessionBackendSummary {
+	if isNil(service) {
+		return SessionBackendSummary{}
+	}
+	serviceType := reflect.TypeOf(service)
+	for serviceType.Kind() == reflect.Pointer {
+		serviceType = serviceType.Elem()
+	}
+
+	switch serviceType.PkgPath() {
+	case "github.com/soasurs/adk/session/memory":
+		return SessionBackendSummary{
+			ID:          "memory",
+			Name:        "Memory",
+			Description: "Process-local in-memory sessions for examples, tests, and local development.",
+		}
+	case "github.com/soasurs/adk/session/database":
+		return SessionBackendSummary{
+			ID:          "database",
+			Name:        "SQL database",
+			Description: "SQL-backed sessions through session/database; the host app owns the database driver and connection.",
+		}
+	default:
+		name := serviceType.Name()
+		if name == "" {
+			name = serviceType.String()
+		}
+		return SessionBackendSummary{
+			ID:   serviceType.PkgPath() + "." + name,
+			Name: name,
+		}
 	}
 }

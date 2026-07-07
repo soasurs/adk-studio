@@ -57,10 +57,11 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleApp(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"name":                h.app.Name(),
-		"agent_count":         len(h.app.agentSummaries()),
-		"has_session_service": h.app.hasSessionService(),
+	writeJSON(w, http.StatusOK, AppSummary{
+		Name:              h.app.Name(),
+		AgentCount:        len(h.app.agentSummaries()),
+		HasSessionService: h.app.hasSessionService(),
+		SessionBackend:    h.app.sessionBackendSummary(),
 	})
 }
 

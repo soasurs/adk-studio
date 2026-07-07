@@ -8,6 +8,19 @@ type AgentSummary struct {
 	Description string `json:"description,omitempty"`
 }
 
+type AppSummary struct {
+	Name              string                 `json:"name"`
+	AgentCount        int                    `json:"agent_count"`
+	HasSessionService bool                   `json:"has_session_service"`
+	SessionBackend    *SessionBackendSummary `json:"session_backend,omitempty"`
+}
+
+type SessionBackendSummary struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
 type SessionSummary struct {
 	SessionID string `json:"session_id"`
 	AppID     string `json:"app_id"`

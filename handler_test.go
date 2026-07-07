@@ -206,6 +206,39 @@ func TestHandlerListsRegisteredAgents(t *testing.T) {
 	}
 }
 
+func TestHandlerReturnsSessionBackend(t *testing.T) {
+	app := NewApp(AppConfig{Name: "test"})
+	if err := app.UseSessionServiceWithBackend(memory.NewMemorySessionService(), SessionBackendSummary{
+		ID:          "memory",
+		Name:        "Memory",
+		Description: "Process-local sessions.",
+	}); err != nil {
+		t.Fatalf("use session service: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/app", nil)
+	NewHandler(app).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+
+	var response AppSummary
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !response.HasSessionService {
+		t.Fatal("has session service = false, want true")
+	}
+	if response.SessionBackend == nil {
+		t.Fatal("session backend = nil, want memory")
+	}
+	if response.SessionBackend.ID != "memory" {
+		t.Fatalf("session backend ID = %q, want memory", response.SessionBackend.ID)
+	}
+}
+
 func TestHandlerServesEmbeddedUI(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/", nil)

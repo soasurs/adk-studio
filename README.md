@@ -72,50 +72,57 @@ The Go package embeds `frontend/dist` with `go:embed`, so a fresh checkout needs
 the frontend build before `go test`, `go build`, or `go run` can compile the
 handler.
 
-## Run the Example
+## Run Examples
 
-The embedded example registers three ADK agent types:
+Each example focuses on one ADK Studio dimension. All examples listen on
+`:18080` by default. Set `STUDIO_ADDR` to use another address.
 
-- `deepseek_agent`: a DeepSeek-backed `llmagent` with local fixture tools and
-  Exa MCP search tools.
-- `sequential_pipeline_agent`: a `sequentialagent` that runs a researcher
-  sub-agent with a real `read_file` tool and then a writer sub-agent.
-- `parallel_review_agent`: a `parallelagent` that fans out to two reviewer
-  sub-agents and merges their final answers.
+Agent examples use DeepSeek and require:
 
 ```bash
 export DEEPSEEK_API_KEY=...
 # Optional:
 export DEEPSEEK_MODEL=...
-export EXA_API_KEY=...
-
-go run ./examples/embedded
 ```
 
-Open [http://127.0.0.1:18080](http://127.0.0.1:18080).
+Run one agent type at a time:
 
-Useful prompts:
-
-```text
-帮我检查 Alex 的订单，看看为什么发货延迟，并给一个处理建议。
-用 Exa 搜索 github.com/soasurs/adk 的相关信息，并总结来源。
-请用 read_file 读取 README.md 和 examples/embedded/main.go，然后分析这个示例展示了哪些 agent 类型。
-请评估：把所有 session 都放在内存里是否适合生产环境？
+```bash
+go run ./examples/agents/llm
+go run ./examples/agents/sequential
+go run ./examples/agents/parallel
 ```
 
-The first two prompts are intended for `deepseek_agent`. The local tool prompt
-is designed to force multiple tool-call rounds:
-`lookup_customer` → `inspect_order` → `recommend_resolution`.
+- `examples/agents/llm`: registers one DeepSeek-backed `llmagent` with local
+  fixture tools. Try: `帮我检查 Alex 的订单，看看为什么发货延迟，并给一个处理建议。`
+- `examples/agents/sequential`: registers one `sequentialagent` that runs a
+  researcher sub-agent with `read_file`, then a writer sub-agent. Try:
+  `请用 read_file 读取 README.md 和 examples/agents/sequential/main.go，然后总结这个示例的流程。`
+- `examples/agents/parallel`: registers one `parallelagent` that fans out to
+  two reviewers and merges their answers. Try:
+  `请评估：把所有 session 都放在内存里是否适合生产环境？`
 
-Use the third prompt with `sequential_pipeline_agent` to see the researcher
-sub-agent call `read_file` before handing its findings to the writer. The
-`read_file` tool is limited to the current working directory where the example
-process starts. Use the fourth prompt with `parallel_review_agent` to see the
-merged fan-out result.
+Session backend examples use a deterministic echo agent so the session store is
+the only variable:
+
+```bash
+go run ./examples/sessions/memory
+go run ./examples/sessions/sqlite
+ADK_STUDIO_POSTGRES_DSN=postgres://... go run ./examples/sessions/postgres
+```
+
+- `examples/sessions/memory`: uses `session/memory`.
+- `examples/sessions/sqlite`: uses ADK `session/database` with SQLite. Set
+  `ADK_STUDIO_SQLITE_DSN` to override the default local database file.
+- `examples/sessions/postgres`: uses ADK `session/database` with PostgreSQL.
+  Multi-process deployments should also provide a distributed run locker.
+
+Open [http://127.0.0.1:18080](http://127.0.0.1:18080) after starting an
+example.
 
 ## Frontend Development
 
-Run the Go example on `:18080`, then start Vite:
+Run any Go example on `:18080`, then start Vite:
 
 ```bash
 cd frontend
@@ -181,7 +188,8 @@ custom `*slog.Logger` in `AppConfig.Logger` when embedding Studio.
 ## HTTP APIs
 
 - `GET /api/health`: handler health and start time.
-- `GET /api/app`: app name, agent count, and session-service status.
+- `GET /api/app`: app name, agent count, session-service status, and current
+  session backend summary.
 - `GET /api/agents`: registered agent summaries.
 - `GET /api/agents/{agent_id}`: one registered agent summary.
 - `POST /api/runs`: run a registered agent with an input `model.Content`.
@@ -190,8 +198,8 @@ Minimal run request:
 
 ```json
 {
-  "agent_id": "deepseek_agent",
-  "app_name": "embedded-example",
+  "agent_id": "llm_agent",
+  "app_name": "llmagent-example",
   "user_id": "local-user",
   "session_id": "session-1",
   "input": {

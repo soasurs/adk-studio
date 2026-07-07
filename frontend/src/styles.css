@@ -170,6 +170,31 @@ p {
   margin-bottom: 12px;
 }
 
+.backend-panel {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #dfe5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.backend-panel strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #17211f;
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backend-panel p {
+  color: #62716d;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .control-section-header {
   align-items: center;
   display: flex;
