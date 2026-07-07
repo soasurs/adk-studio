@@ -143,13 +143,15 @@ export function App() {
 
     setError("");
     setIsRunning(true);
+    const sentAt = Date.now();
     updateSessionMessages(runSession.key, (current) => [
       ...current,
       {
-        id: `user-${Date.now()}`,
+        id: `user-${sentAt}`,
         role: "user",
         author: "user",
-        content: prompt
+        content: prompt,
+        createdAt: sentAt
       }
     ]);
     setInput("");
@@ -202,6 +204,7 @@ export function App() {
         const events = "events" in data && data.events ? completeRunEvents(data.events) : [];
         const eventError = [...events].reverse().find((event) => event.error)?.error;
         const message = ("error" in data && data.error) || eventError || "Run failed";
+        const failedAt = Date.now();
         setError(message);
         updateSessionTraceEvents(runSession.key, (current) => [
           ...current,
@@ -210,33 +213,36 @@ export function App() {
         updateSessionMessages(runSession.key, (current) => [
           ...current,
           {
-            id: `error-${Date.now()}`,
+            id: `error-${failedAt}`,
             role: "error",
             author: "error",
-            content: message
+            content: message,
+            createdAt: failedAt
           }
         ]);
         return;
       }
 
       const run = data as RunResponse;
-      const events = completeRunEvents(run.events);
+      const events = completeRunEvents(run.events).map(markRunEventReceived);
       syncSessionID(runSession.key, run.session_id);
       updateSessionTraceEvents(runSession.key, (current) => [
         ...current,
-        ...events.map(markRunEventReceived).filter(isTraceVisible)
+        ...events.filter(isTraceVisible)
       ]);
       updateSessionMessages(runSession.key, (current) => [...current, ...events.flatMap(eventToMessages)]);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Run failed";
+      const failedAt = Date.now();
       setError(message);
       updateSessionMessages(runSession.key, (current) => [
         ...current,
         {
-          id: `error-${Date.now()}`,
+          id: `error-${failedAt}`,
           role: "error",
           author: "error",
-          content: message
+          content: message,
+          createdAt: failedAt
         }
       ]);
     } finally {
@@ -258,7 +264,7 @@ export function App() {
   }
 
   return (
-    <main className="studio-shell">
+    <main className="grid h-dvh min-h-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-background text-foreground md:grid-cols-[260px_minmax(0,1fr)] md:grid-rows-1 xl:grid-cols-[300px_minmax(0,1fr)_340px]">
       <Sidebar
         app={app}
         agents={agents}

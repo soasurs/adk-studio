@@ -6,6 +6,10 @@
 
 ADK Studio 是一个可嵌入的 React 工作台，用于开发、测试和观察 ADK agent。用户在正常 Go 代码里定义 agent，把 agent 注册到 Studio，然后从同一个进程里提供 Studio UI。Studio 不负责动态加载任意 Go 源码。
 
+## UI 预览
+
+![ADK Studio UI](./docs/images/Screenshot.png)
+
 ## 架构
 
 这个仓库分成三部分：

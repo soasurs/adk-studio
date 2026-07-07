@@ -9,6 +9,10 @@ observing ADK agents. Users define agents in normal Go code, register them with
 Studio, and serve the Studio UI from the same process. Studio does not
 dynamically load arbitrary Go source.
 
+## UI Preview
+
+![ADK Studio UI](./docs/images/Screenshot.png)
+
 ## Architecture
 
 This repository is split into three parts:

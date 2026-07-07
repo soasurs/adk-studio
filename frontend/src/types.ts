@@ -73,6 +73,7 @@ export type Message = {
   role: "user" | "assistant" | "tool_call" | "tool_result" | "system" | "error";
   author: string;
   content: string;
+  createdAt?: number;
   reasoning?: string;
   partial?: boolean;
 };

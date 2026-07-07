@@ -5,4 +5,5 @@ frontend/dist/
 /studio
 node_modules/
 frontend/node_modules/
+.pnpm-store/
 frontend/tsconfig.tsbuildinfo

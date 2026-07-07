@@ -1,4 +1,5 @@
 import type { ADKEvent, Message, RunStreamEvent } from "./types";
+import { formatBlock } from "./formatDisplay";
 
 type EventContent = NonNullable<ADKEvent["Content"]>;
 type ToolCall = NonNullable<EventContent["ToolCalls"]>[number];
@@ -82,7 +83,8 @@ export function eventToMessages(trace: RunStreamEvent): Message[] {
         id: `${trace.run_id}-error`,
         role: "error",
         author: "error",
-        content: trace.error || "Run failed"
+        content: trace.error || "Run failed",
+        createdAt: messageTimestamp(trace)
       }
     ];
   }
@@ -105,7 +107,8 @@ export function eventToMessages(trace: RunStreamEvent): Message[] {
       id: `${idPrefix}-tool-result`,
       role: "tool_result",
       author: toolResultAuthor(toolResult),
-      content: formatToolResult(toolResult)
+      content: formatToolResult(toolResult),
+      createdAt: messageTimestamp(trace)
     });
     return messages;
   }
@@ -119,6 +122,7 @@ export function eventToMessages(trace: RunStreamEvent): Message[] {
       role,
       author: trace.event.Author || role,
       content: text,
+      createdAt: messageTimestamp(trace),
       reasoning,
       partial: trace.event.Partial
     });
@@ -130,7 +134,8 @@ export function eventToMessages(trace: RunStreamEvent): Message[] {
         id: `${idPrefix}-tool-call-${call.ID || index}`,
         role: "tool_call" as const,
         author: toolCallAuthor(call),
-        content: formatToolCall(call)
+        content: formatToolCall(call),
+        createdAt: messageTimestamp(trace)
       }))
     );
   }
@@ -140,7 +145,8 @@ export function eventToMessages(trace: RunStreamEvent): Message[] {
       id: `${idPrefix}-tool-result-${content.ToolResult.ToolCallID || "result"}`,
       role: "tool_result",
       author: toolResultAuthor(content.ToolResult),
-      content: formatToolResult(content.ToolResult)
+      content: formatToolResult(content.ToolResult),
+      createdAt: messageTimestamp(trace)
     });
   }
 
@@ -196,6 +202,7 @@ function upsertPartialMessage(current: Message[], trace: RunStreamEvent): Messag
         role,
         author: trace.event.Author || role,
         content: text,
+        createdAt: messageTimestamp(trace),
         reasoning: reasoning || undefined,
         partial: true
       }
@@ -207,6 +214,7 @@ function upsertPartialMessage(current: Message[], trace: RunStreamEvent): Messag
   const updated: Message = {
     ...existing,
     content: `${existing.content}${text}`,
+    createdAt: existing.createdAt || messageTimestamp(trace),
     reasoning: nextReasoning || undefined,
     partial: true
   };
@@ -230,6 +238,10 @@ function eventReasoning(event: ADKEvent): string {
   return event.Content?.ReasoningContent || "";
 }
 
+function messageTimestamp(trace: RunStreamEvent): number | undefined {
+  return trace.event?.CreatedAt ?? trace.event?.UpdatedAt ?? trace.received_at;
+}
+
 function toolCallAuthor(call: ToolCall): string {
   return `tool call: ${call.Name || call.ID || "tool"}`;
 }
@@ -239,42 +251,34 @@ function toolResultAuthor(result: Partial<ToolResult>): string {
 }
 
 function formatToolCall(call: ToolCall): string {
-  const lines = [`name: ${call.Name || "tool"}`];
+  const lines = [`**name:** ${call.Name || "tool"}`];
   if (call.ID) {
-    lines.push(`id: ${call.ID}`);
+    lines.push(`**id:** ${call.ID}`);
   }
   if (call.Arguments !== undefined && call.Arguments !== null) {
-    lines.push(`arguments:\n${formatValue(call.Arguments)}`);
+    lines.push("**arguments:**", formatBlock(call.Arguments));
   }
-  return lines.join("\n");
+  return lines.join("\n\n");
 }
 
 function formatToolResult(result: Partial<ToolResult>): string {
-  const lines = [`status: ${result?.IsError ? "error" : "ok"}`];
+  const lines = [`**status:** ${result?.IsError ? "error" : "ok"}`];
   if (result?.Name) {
-    lines.push(`name: ${result.Name}`);
+    lines.push(`**name:** ${result.Name}`);
   }
   if (result?.ToolCallID) {
-    lines.push(`id: ${result.ToolCallID}`);
+    lines.push(`**id:** ${result.ToolCallID}`);
   }
-  if (result?.Content) {
-    lines.push(`content:\n${result.Content}`);
+  const payload = toolResultPayload(result);
+  if (payload !== undefined && payload !== null && payload !== "") {
+    lines.push("**result:**", formatBlock(payload));
   }
-  if (result?.StructuredContent !== undefined && result.StructuredContent !== null) {
-    lines.push(`structured:\n${formatValue(result.StructuredContent)}`);
-  }
-  return lines.join("\n");
+  return lines.join("\n\n");
 }
 
-function formatValue(value: unknown): string {
-  if (typeof value === "string") {
-    try {
-      return JSON.stringify(JSON.parse(value), null, 2);
-    } catch {
-      return value;
-    }
+function toolResultPayload(result: Partial<ToolResult>): unknown {
+  if (result?.StructuredContent !== undefined && result.StructuredContent !== null) {
+    return result.StructuredContent;
   }
-
-  const json = JSON.stringify(value, null, 2);
-  return json || String(value);
+  return result?.Content;
 }

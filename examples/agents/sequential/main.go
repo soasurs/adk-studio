@@ -72,7 +72,7 @@ func newResearcherAgent(llm model.LLM, readFile tool.Tool) adkagent.Agent {
 			Temperature: 0.2,
 			MaxTokens:   1024,
 		},
-		MaxIterations: 6,
+		MaxIterations: 30,
 		Stream:        true,
 	})
 }
