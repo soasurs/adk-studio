@@ -39,6 +39,21 @@ Frontend code uses TypeScript and React components in PascalCase
 (`Playground.tsx`, `TraceInspector.tsx`). Shared helpers use camelCase file and
 function names, such as `formatDisplay.ts`.
 
+## Runtime Protocol Synchronization
+
+Studio merges runner events and concurrent tracer callbacks through one bounded
+FIFO feed. Keep response writing serialized, propagate cancellation to Runner,
+and wait for Runner shutdown so incomplete-turn rollback finishes. Final span
+end records must precede terminal `error` or `done` frames.
+
+When changing ADK event, trace, or failure payloads, update the Go wire types in
+`protocol.go` and the matching frontend types and reducers in
+`frontend/src/types.ts`, `frontend/src/runEvents.ts`, and
+`frontend/src/traceView.ts`. JSON responses omit partial model events but retain
+runtime trace ordering; SSE includes partial frames. Typed unknown-tool failures
+must not expose tool arguments. Keep 64-bit event IDs as decimal strings in
+Studio wire types so browser clients do not lose Snowflake precision.
+
 ## Testing Guidelines
 
 Use Go's standard `testing` package for backend behavior. Name tests
@@ -46,6 +61,12 @@ Use Go's standard `testing` package for backend behavior. Name tests
 handler tests for HTTP behavior, SSE streaming, and JSON compatibility. There is
 no separate frontend test runner configured; use `pnpm build` as the baseline
 frontend validation.
+
+Runtime tests should cover trace ordering and host-tracer fan-out, turn
+correlation, typed failures, session rollback, and cancellation caused by
+client disconnects or SSE write failures. Example tool tests should distinguish
+model-visible handled failures (`Result.IsError=true`, nil Go error) from
+terminal cancellation or infrastructure errors.
 
 ## Commit & Pull Request Guidelines
 

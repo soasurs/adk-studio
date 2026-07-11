@@ -283,14 +283,15 @@ func TestHandlerRunsRegisteredAgent(t *testing.T) {
 	if response.SessionID != "session-1" {
 		t.Fatalf("session ID = %q, want session-1", response.SessionID)
 	}
-	if len(response.Events) != 1 {
-		t.Fatalf("events length = %d, want 1", len(response.Events))
-	}
-	if response.Events[0].Event == nil {
+	eventFrame := findRunFrame(response.Events, "event")
+	if eventFrame == nil || eventFrame.Event == nil {
 		t.Fatalf("event was nil")
 	}
-	if response.Events[0].Event.Content.Content != "Echo: hello" {
-		t.Fatalf("event content = %q, want Echo: hello", response.Events[0].Event.Content.Content)
+	if eventFrame.Event.Content.Content != "Echo: hello" {
+		t.Fatalf("event content = %q, want Echo: hello", eventFrame.Event.Content.Content)
+	}
+	if findRunFrame(response.Events, "trace") == nil {
+		t.Fatal("runtime trace frame was missing")
 	}
 }
 
@@ -322,10 +323,16 @@ func TestHandlerJSONRunOmitsPartialEvents(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-	if len(response.Events) != 1 {
-		t.Fatalf("events length = %d, want 1", len(response.Events))
+	for _, frame := range response.Events {
+		if frame.Type == "partial" || frame.Event != nil && frame.Event.Partial {
+			t.Fatalf("JSON response contained partial frame: %#v", frame)
+		}
 	}
-	event := response.Events[0].Event
+	eventFrame := findRunFrame(response.Events, "event")
+	if eventFrame == nil {
+		t.Fatal("complete event frame was missing")
+	}
+	event := eventFrame.Event
 	if event == nil {
 		t.Fatal("event was nil")
 	}
@@ -370,11 +377,20 @@ func TestHandlerStreamsRunEventsWhenRequested(t *testing.T) {
 		close(done)
 	}()
 
-	select {
-	case <-recorder.flushes:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for first streamed flush")
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case <-recorder.flushes:
+			_, _, streamedBody := recorder.snapshot()
+			if strings.Contains(streamedBody, "event: partial\n") {
+				goto partialReceived
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for streamed partial")
+		}
 	}
+
+partialReceived:
 
 	status, contentType, streamedBody := recorder.snapshot()
 	if status != http.StatusOK {
@@ -413,6 +429,11 @@ func TestHandlerStreamsRunEventsWhenRequested(t *testing.T) {
 	}
 	if !strings.Contains(finalBody, "first second") {
 		t.Fatalf("streamed body did not contain complete event: %q", finalBody)
+	}
+	endIndex := strings.LastIndex(finalBody, `"phase":"end","kind":"adk.runner.run"`)
+	doneIndex := strings.LastIndex(finalBody, "event: done\n")
+	if endIndex < 0 || doneIndex < 0 || endIndex > doneIndex {
+		t.Fatalf("runner end trace must precede done frame: %q", finalBody)
 	}
 }
 
@@ -455,6 +476,9 @@ func TestHandlerLogsRunEventsAtInfo(t *testing.T) {
 	}
 	if !strings.Contains(output, "Echo: hello") {
 		t.Fatalf("expected serialized event content in log, got %q", output)
+	}
+	if !strings.Contains(output, "turn_id=") {
+		t.Fatalf("expected turn_id in log, got %q", output)
 	}
 }
 
@@ -521,7 +545,20 @@ func TestHandlerRunErrorIncludesTopLevelMessage(t *testing.T) {
 	if response.Error != "provider rejected history" {
 		t.Fatalf("error = %q, want provider rejected history", response.Error)
 	}
-	if len(response.Events) != 1 || response.Events[0].Error != "provider rejected history" {
+	errorFrame := findRunFrame(response.Events, "error")
+	if errorFrame == nil || errorFrame.Error != "provider rejected history" {
 		t.Fatalf("expected error event, got %#v", response.Events)
 	}
+	if errorFrame.Failure == nil || errorFrame.Failure.Code != "run_failed" {
+		t.Fatalf("typed failure = %#v, want run_failed", errorFrame.Failure)
+	}
+}
+
+func findRunFrame(events []RunStreamEvent, eventType string) *RunStreamEvent {
+	for i := range events {
+		if events[i].Type == eventType {
+			return &events[i]
+		}
+	}
+	return nil
 }

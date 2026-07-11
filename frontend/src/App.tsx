@@ -7,10 +7,10 @@ import { TraceInspector } from "./components/TraceInspector";
 import {
   applyRunStreamEvent,
   completeRunEvents,
-  eventToMessages,
   isTraceVisible,
   markRunEventReceived,
-  readRunEventStream
+  readRunEventStream,
+  runFailureMessage
 } from "./runEvents";
 import type { Agent, Message, RunResponse, RunStreamEvent, StudioApp } from "./types";
 import type { SendShortcut, SessionDraft, StudioSession } from "./uiTypes";
@@ -144,10 +144,11 @@ export function App() {
     setError("");
     setIsRunning(true);
     const sentAt = Date.now();
+    const userMessageID = `user-${sentAt}`;
     updateSessionMessages(runSession.key, (current) => [
       ...current,
       {
-        id: `user-${sentAt}`,
+        id: userMessageID,
         role: "user",
         author: "user",
         content: prompt,
@@ -155,6 +156,8 @@ export function App() {
       }
     ]);
     setInput("");
+    let currentRunID = "";
+    let terminalFailureReceived = false;
 
     try {
       const headers: Record<string, string> = {
@@ -181,45 +184,48 @@ export function App() {
 
       if (streamingEnabled && response.ok && response.headers.get("Content-Type")?.includes("text/event-stream")) {
         await readRunEventStream(response, (event) => {
+          currentRunID = event.run_id || currentRunID;
           if (event.session_id) {
             syncSessionID(runSession.key, event.session_id);
           }
-          if (event.type === "done") {
-            return;
-          }
           if (event.type === "error") {
-            setError(event.error || "Run failed");
+            terminalFailureReceived = true;
+            setError(runFailureMessage(event));
           }
           const receivedEvent = markRunEventReceived(event);
           if (isTraceVisible(receivedEvent)) {
             updateSessionTraceEvents(runSession.key, (current) => [...current, receivedEvent]);
           }
-          updateSessionMessages(runSession.key, (current) => applyRunStreamEvent(current, receivedEvent));
+          updateSessionMessages(runSession.key, (current) => applyRunStreamEvent(current, receivedEvent, userMessageID));
         });
         return;
       }
 
       const data = (await response.json()) as RunResponse | { error?: string; events?: RunStreamEvent[] };
+      if ("run_id" in data && typeof data.run_id === "string") {
+        currentRunID = data.run_id;
+      }
       if (!response.ok) {
-        const events = "events" in data && data.events ? completeRunEvents(data.events) : [];
-        const eventError = [...events].reverse().find((event) => event.error)?.error;
-        const message = ("error" in data && data.error) || eventError || "Run failed";
-        const failedAt = Date.now();
+        const events = "events" in data && data.events ? completeRunEvents(data.events).map(markRunEventReceived) : [];
+        const failureEvent = [...events].reverse().find((event) => event.type === "error");
+        const message = failureEvent
+          ? runFailureMessage(failureEvent)
+          : ("error" in data && data.error) || "Run failed";
+        terminalFailureReceived = true;
+        const runID = currentRunID || `failed-${sentAt}`;
+        const failure = failureEvent || markRunEventReceived({ type: "error", run_id: runID, error: message });
         setError(message);
         updateSessionTraceEvents(runSession.key, (current) => [
           ...current,
-          ...events.map(markRunEventReceived).filter(isTraceVisible)
+          ...events.filter(isTraceVisible),
+          ...(failureEvent ? [] : [failure])
         ]);
-        updateSessionMessages(runSession.key, (current) => [
-          ...current,
-          {
-            id: `error-${failedAt}`,
-            role: "error",
-            author: "error",
-            content: message,
-            createdAt: failedAt
-          }
-        ]);
+        updateSessionMessages(runSession.key, (current) =>
+          [...events.filter((event) => event.type !== "error"), failure].reduce(
+            (messages, event) => applyRunStreamEvent(messages, event, userMessageID),
+            current
+          )
+        );
         return;
       }
 
@@ -230,21 +236,23 @@ export function App() {
         ...current,
         ...events.filter(isTraceVisible)
       ]);
-      updateSessionMessages(runSession.key, (current) => [...current, ...events.flatMap(eventToMessages)]);
+      updateSessionMessages(runSession.key, (current) =>
+        events.reduce((messages, event) => applyRunStreamEvent(messages, event, userMessageID), current)
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : "Run failed";
-      const failedAt = Date.now();
       setError(message);
-      updateSessionMessages(runSession.key, (current) => [
-        ...current,
-        {
-          id: `error-${failedAt}`,
-          role: "error",
-          author: "error",
-          content: message,
-          createdAt: failedAt
-        }
-      ]);
+      if (!terminalFailureReceived) {
+        const failure = markRunEventReceived({
+          type: "error",
+          run_id: currentRunID || `failed-${sentAt}`,
+          session_id: runSessionID,
+          error: message,
+          failure: { code: "run_failed", message, session_id: runSessionID }
+        });
+        updateSessionTraceEvents(runSession.key, (current) => [...current, failure]);
+        updateSessionMessages(runSession.key, (current) => applyRunStreamEvent(current, failure, userMessageID));
+      }
     } finally {
       setIsRunning(false);
     }

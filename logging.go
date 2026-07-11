@@ -70,6 +70,7 @@ func logRunEvent(ctx context.Context, logger *slog.Logger, runID, sessionID, age
 	if event != nil {
 		attrs = append(attrs,
 			"event_id", event.ID,
+			"turn_id", event.TurnID,
 			"author", event.Author,
 			"role", string(event.Content.Role),
 			"partial", event.Partial,

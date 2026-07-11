@@ -14,7 +14,7 @@ import {
 
 import type { RunStreamEvent } from "../types";
 import { formatTraceEvent } from "../formatDisplay";
-import { traceTimeISO, traceTimeLabel, traceTitle, traceTypeLabel } from "../traceView";
+import { tracePhaseLabel, traceTimeISO, traceTimeLabel, traceTitle, traceTypeLabel } from "../traceView";
 
 const tracePreviewCharacterLimit = 2600;
 const tracePreviewLineLimit = 80;
@@ -62,6 +62,9 @@ function TraceEventCard({ trace }: { trace: RunStreamEvent }) {
             <div className="flex min-w-0 items-center gap-2">
               <Badge variant="secondary" className="uppercase">
                 {traceTypeLabel(trace)}
+              </Badge>
+              <Badge variant="outline" className="uppercase">
+                {tracePhaseLabel(trace)}
               </Badge>
               <Badge variant="outline" className="font-mono">
                 <time dateTime={traceTimeISO(trace)}>{traceTimeLabel(trace)}</time>

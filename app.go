@@ -10,6 +10,7 @@ import (
 
 	adkagent "github.com/soasurs/adk/agent"
 	"github.com/soasurs/adk/session"
+	"github.com/soasurs/adk/trace"
 )
 
 type AppConfig struct {
@@ -19,12 +20,16 @@ type AppConfig struct {
 	LogLevel LogLevel
 	// Logger overrides the default Studio logger. When set, LogLevel is ignored.
 	Logger *slog.Logger
+	// Tracer receives the same ADK runtime spans that Studio collects for its UI.
+	// A nil tracer keeps host-side tracing disabled.
+	Tracer trace.Tracer
 }
 
 type App struct {
 	mu             sync.RWMutex
 	name           string
 	logger         *slog.Logger
+	tracer         trace.Tracer
 	agents         map[string]adkagent.Agent
 	sessions       session.SessionService
 	sessionBackend SessionBackendSummary
@@ -42,8 +47,18 @@ func NewApp(config AppConfig) *App {
 	return &App{
 		name:   name,
 		logger: logger,
+		tracer: config.Tracer,
 		agents: make(map[string]adkagent.Agent),
 	}
+}
+
+func (a *App) tracerForRun() trace.Tracer {
+	if a == nil {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.tracer
 }
 
 func (a *App) Name() string {

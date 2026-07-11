@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/soasurs/adk/runner"
 	"github.com/soasurs/adk/session"
 )
 
@@ -127,9 +126,18 @@ func (h *Handler) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	adkRunner, err := runner.New(agent, sessionService)
+	if acceptsEventStream(r) {
+		if _, ok := w.(http.Flusher); !ok {
+			writeError(w, http.StatusInternalServerError, "streaming is not supported")
+			return
+		}
+	}
+
+	runID := newRunID()
+	execution, err := h.startRun(r.Context(), agent, sessionService, runID, req)
 	if err != nil {
 		h.app.loggerForRun().ErrorContext(r.Context(), "adk studio runner setup failed",
+			"run_id", runID,
 			"agent_id", req.AgentID,
 			"session_id", req.SessionID,
 			"error", err,
@@ -137,8 +145,8 @@ func (h *Handler) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	defer execution.cancel()
 
-	runID := newRunID()
 	h.app.loggerForRun().InfoContext(r.Context(), "adk studio run started",
 		"run_id", runID,
 		"agent_id", req.AgentID,
@@ -147,56 +155,45 @@ func (h *Handler) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		"session_id", req.SessionID,
 	)
 	if acceptsEventStream(r) {
-		h.streamRun(w, r, adkRunner, runID, req)
+		h.streamRun(w, execution)
 		return
 	}
 
 	events := make([]RunStreamEvent, 0)
-	for event, err := range adkRunner.Run(r.Context(), req.SessionID, req.Input) {
-		if err != nil {
-			errMsg := err.Error()
-			h.app.loggerForRun().ErrorContext(r.Context(), "adk studio run failed",
-				"run_id", runID,
-				"agent_id", req.AgentID,
-				"session_id", req.SessionID,
-				"event_count", len(events),
-				"error", err,
-			)
-			writeJSON(w, http.StatusInternalServerError, RunResponse{
-				RunID:     runID,
-				SessionID: req.SessionID,
-				Error:     errMsg,
-				Events: append(events, RunStreamEvent{
-					Type:      "error",
-					RunID:     runID,
-					SessionID: req.SessionID,
-					Error:     errMsg,
-				}),
-			})
-			return
-		}
-		logRunEvent(r.Context(), h.app.loggerForRun(), runID, req.SessionID, req.AgentID, event)
-		if event.Partial {
+	var runError string
+	runFailed := false
+	for event := range execution.events {
+		if event.Type == "partial" || event.Event != nil && event.Event.Partial {
 			continue
 		}
+		events = append(events, event)
+		if event.Type == "error" {
+			runFailed = true
+			runError = event.Error
+		}
+	}
+	completionErr := <-execution.done
+	if completionErr != nil && !runFailed {
+		runFailed = true
+		runError = completionErr.Error()
 		events = append(events, RunStreamEvent{
-			Type:      "event",
+			Type:      "error",
 			RunID:     runID,
 			SessionID: req.SessionID,
-			Event:     event,
+			Error:     runError,
+			Failure:   runFailure(completionErr, req.SessionID),
 		})
 	}
-	h.app.loggerForRun().InfoContext(r.Context(), "adk studio run completed",
-		"run_id", runID,
-		"agent_id", req.AgentID,
-		"session_id", req.SessionID,
-		"event_count", len(events),
-	)
 
-	writeJSON(w, http.StatusOK, RunResponse{
+	status := http.StatusOK
+	if runFailed {
+		status = http.StatusInternalServerError
+	}
+	writeJSON(w, status, RunResponse{
 		RunID:     runID,
 		SessionID: req.SessionID,
 		Events:    events,
+		Error:     runError,
 	})
 }
 
@@ -204,10 +201,10 @@ func acceptsEventStream(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 }
 
-func (h *Handler) streamRun(w http.ResponseWriter, r *http.Request, adkRunner *runner.Runner, runID string, req RunRequest) {
+func (h *Handler) streamRun(w http.ResponseWriter, execution *runExecution) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming is not supported")
+		execution.cancelAndWait()
 		return
 	}
 
@@ -216,54 +213,16 @@ func (h *Handler) streamRun(w http.ResponseWriter, r *http.Request, adkRunner *r
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	eventCount := 0
-	for event, err := range adkRunner.Run(r.Context(), req.SessionID, req.Input) {
-		if err != nil {
-			errMsg := err.Error()
-			h.app.loggerForRun().ErrorContext(r.Context(), "adk studio run failed",
-				"run_id", runID,
-				"agent_id", req.AgentID,
-				"session_id", req.SessionID,
-				"event_count", eventCount,
-				"error", err,
-			)
-			_ = writeRunSSE(w, flusher, RunStreamEvent{
-				Type:      "error",
-				RunID:     runID,
-				SessionID: req.SessionID,
-				Error:     errMsg,
-			})
-			return
-		}
-		logRunEvent(r.Context(), h.app.loggerForRun(), runID, req.SessionID, req.AgentID, event)
-		eventCount++
-		eventType := "event"
-		if event.Partial {
-			eventType = "partial"
-		}
-		if err := writeRunSSE(w, flusher, RunStreamEvent{
-			Type:      eventType,
-			RunID:     runID,
-			SessionID: req.SessionID,
-			Event:     event,
-		}); err != nil {
+	for event := range execution.events {
+		if err := writeRunSSE(w, flusher, event); err != nil {
+			execution.cancelAndWait()
 			return
 		}
 	}
-	h.app.loggerForRun().InfoContext(r.Context(), "adk studio run completed",
-		"run_id", runID,
-		"agent_id", req.AgentID,
-		"session_id", req.SessionID,
-		"event_count", eventCount,
-	)
-	_ = writeRunSSE(w, flusher, RunStreamEvent{
-		Type:      "done",
-		RunID:     runID,
-		SessionID: req.SessionID,
-	})
+	<-execution.done
 }
 
-func writeRunSSE(w http.ResponseWriter, flusher http.Flusher, event RunStreamEvent) error {
+func writeRunSSE(w http.ResponseWriter, _ http.Flusher, event RunStreamEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -274,8 +233,7 @@ func writeRunSSE(w http.ResponseWriter, flusher http.Flusher, event RunStreamEve
 	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
 		return err
 	}
-	flusher.Flush()
-	return nil
+	return http.NewResponseController(w).Flush()
 }
 
 func ensureSession(ctx context.Context, service session.SessionService, req RunRequest) error {

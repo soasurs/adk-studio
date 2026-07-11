@@ -144,8 +144,14 @@ func toolNames(tools []tool.Tool) []string {
 	return names
 }
 
-func lookupCustomer(_ context.Context, input lookupCustomerInput) (lookupCustomerOutput, error) {
+func lookupCustomer(ctx context.Context, input lookupCustomerInput) (lookupCustomerOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return lookupCustomerOutput{}, err
+	}
 	query := strings.ToLower(input.Query)
+	if strings.TrimSpace(query) == "" {
+		return lookupCustomerOutput{}, tool.NewFuncError("query is required")
+	}
 	if strings.Contains(query, "sam") || strings.Contains(query, "bob") {
 		return lookupCustomerOutput{
 			CustomerID:      "cus-2048",
@@ -159,21 +165,28 @@ func lookupCustomer(_ context.Context, input lookupCustomerInput) (lookupCustome
 		}, nil
 	}
 
-	return lookupCustomerOutput{
-		CustomerID:      "cus-1001",
-		CustomerName:    "Alex Chen",
-		ActiveOrderID:   "ord-9001",
-		DiagnosticToken: "diag-cus-1001-ord-9001",
-		Notes: []string{
-			"matched default Studio tool-call fixture",
-			"active order is flagged for delivery investigation",
-		},
-	}, nil
+	if strings.Contains(query, "alex") {
+		return lookupCustomerOutput{
+			CustomerID:      "cus-1001",
+			CustomerName:    "Alex Chen",
+			ActiveOrderID:   "ord-9001",
+			DiagnosticToken: "diag-cus-1001-ord-9001",
+			Notes: []string{
+				"matched default Studio tool-call fixture",
+				"active order is flagged for delivery investigation",
+			},
+		}, nil
+	}
+
+	return lookupCustomerOutput{}, tool.NewFuncError("no fixture customer matched the query")
 }
 
-func inspectOrder(_ context.Context, input inspectOrderInput) (inspectOrderOutput, error) {
+func inspectOrder(ctx context.Context, input inspectOrderInput) (inspectOrderOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return inspectOrderOutput{}, err
+	}
 	if input.CustomerID == "" || input.OrderID == "" || input.DiagnosticToken == "" {
-		return inspectOrderOutput{}, fmt.Errorf("customer_id, order_id, and diagnostic_token are required")
+		return inspectOrderOutput{}, tool.NewFuncError("customer_id, order_id, and diagnostic_token are required")
 	}
 
 	switch input.OrderID {
@@ -203,13 +216,16 @@ func inspectOrder(_ context.Context, input inspectOrderInput) (inspectOrderOutpu
 			},
 		}, nil
 	default:
-		return inspectOrderOutput{}, fmt.Errorf("unknown fixture order_id %q", input.OrderID)
+		return inspectOrderOutput{}, tool.NewFuncError(fmt.Sprintf("unknown fixture order_id %q", input.OrderID))
 	}
 }
 
-func recommendResolution(_ context.Context, input recommendResolutionInput) (recommendResolutionOutput, error) {
+func recommendResolution(ctx context.Context, input recommendResolutionInput) (recommendResolutionOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return recommendResolutionOutput{}, err
+	}
 	if input.IssueCode == "" || input.ResolutionKey == "" {
-		return recommendResolutionOutput{}, fmt.Errorf("issue_code and resolution_key are required")
+		return recommendResolutionOutput{}, tool.NewFuncError("issue_code and resolution_key are required")
 	}
 
 	switch input.ResolutionKey {
@@ -234,6 +250,6 @@ func recommendResolution(_ context.Context, input recommendResolutionInput) (rec
 			Confidence: "medium-high",
 		}, nil
 	default:
-		return recommendResolutionOutput{}, fmt.Errorf("unknown resolution_key %q", input.ResolutionKey)
+		return recommendResolutionOutput{}, tool.NewFuncError(fmt.Sprintf("unknown resolution_key %q", input.ResolutionKey))
 	}
 }

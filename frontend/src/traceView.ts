@@ -1,6 +1,9 @@
 import type { RunStreamEvent } from "./types";
 
 export function traceTypeLabel(trace: RunStreamEvent): string {
+  if (trace.trace) {
+    return trace.trace.kind;
+  }
   if (trace.type === "error") {
     return "error";
   }
@@ -18,7 +21,11 @@ export function traceTypeLabel(trace: RunStreamEvent): string {
 }
 
 export function traceTitle(trace: RunStreamEvent): string {
-  return trace.event?.Author || trace.error || "event";
+  return trace.trace?.tool_name || trace.trace?.agent_name || trace.trace?.model || trace.trace?.kind || trace.event?.Author || trace.error || "event";
+}
+
+export function tracePhaseLabel(trace: RunStreamEvent): string {
+  return trace.trace?.phase || trace.type;
 }
 
 export function traceTimeLabel(trace: RunStreamEvent): string {
@@ -38,7 +45,7 @@ export function traceTimeISO(trace: RunStreamEvent): string {
 }
 
 function traceTime(trace: RunStreamEvent): Date | null {
-  const timestamp = trace.event?.CreatedAt || trace.event?.UpdatedAt || trace.received_at;
+  const timestamp = trace.trace?.time || trace.event?.CreatedAt || trace.event?.UpdatedAt || trace.received_at;
   if (!timestamp) {
     return null;
   }

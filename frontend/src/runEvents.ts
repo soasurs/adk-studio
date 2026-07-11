@@ -17,7 +17,7 @@ export function markRunEventReceived(event: RunStreamEvent): RunStreamEvent {
 }
 
 export function isTraceVisible(trace: RunStreamEvent): boolean {
-  return trace.type !== "partial" && !trace.event?.Partial;
+  return trace.type !== "partial" && trace.type !== "done" && !trace.event?.Partial;
 }
 
 export async function readRunEventStream(response: Response, onEvent: (event: RunStreamEvent) => void) {
@@ -50,27 +50,41 @@ export async function readRunEventStream(response: Response, onEvent: (event: Ru
   }
 }
 
-export function applyRunStreamEvent(current: Message[], trace: RunStreamEvent): Message[] {
+export function applyRunStreamEvent(current: Message[], trace: RunStreamEvent, userMessageID?: string): Message[] {
+  const associated = associateUserMessage(current, trace.run_id, userMessageID);
+  if (trace.type === "done") {
+    return associated.map((message) =>
+      message.id === userMessageID ? { ...message, failed: false, persisted: true } : message
+    );
+  }
   if (trace.type === "error") {
-    return [...current, ...eventToMessages(trace)];
+    const cleaned = associated.filter(
+      (message) =>
+        message.runId !== trace.run_id ||
+        !["assistant", "tool_call", "tool_result"].includes(message.role)
+    );
+    const failed = cleaned.map((message) =>
+      message.id === userMessageID ? { ...message, failed: true, persisted: false } : message
+    );
+    return [...failed, ...eventToMessages(trace)];
   }
   if (!trace.event) {
-    return current;
+    return associated;
   }
   if (trace.type === "partial" || trace.event.Partial) {
-    return upsertPartialMessage(current, trace);
+    return upsertPartialMessage(associated, trace);
   }
 
   const messages = eventToMessages(trace);
   const partialID = partialMessageID(trace);
-  const partialIndex = current.findIndex((message) => message.id === partialID);
+  const partialIndex = associated.findIndex((message) => message.id === partialID);
   if (partialIndex < 0) {
-    return messages.length > 0 ? [...current, ...messages] : current;
+    return messages.length > 0 ? [...associated, ...messages] : associated;
   }
   if (messages.length === 0) {
-    return current.filter((_, index) => index !== partialIndex);
+    return associated.filter((_, index) => index !== partialIndex);
   }
-  return [...current.slice(0, partialIndex), ...messages, ...current.slice(partialIndex + 1)];
+  return [...associated.slice(0, partialIndex), ...messages, ...associated.slice(partialIndex + 1)];
 }
 
 export function eventToMessages(trace: RunStreamEvent): Message[] {
@@ -83,8 +97,9 @@ export function eventToMessages(trace: RunStreamEvent): Message[] {
         id: `${trace.run_id}-error`,
         role: "error",
         author: "error",
-        content: trace.error || "Run failed",
-        createdAt: messageTimestamp(trace)
+        content: runFailureMessage(trace),
+        createdAt: messageTimestamp(trace),
+        runId: trace.run_id
       }
     ];
   }
@@ -108,7 +123,8 @@ export function eventToMessages(trace: RunStreamEvent): Message[] {
       role: "tool_result",
       author: toolResultAuthor(toolResult),
       content: formatToolResult(toolResult),
-      createdAt: messageTimestamp(trace)
+      createdAt: messageTimestamp(trace),
+      runId: trace.run_id
     });
     return messages;
   }
@@ -124,7 +140,8 @@ export function eventToMessages(trace: RunStreamEvent): Message[] {
       content: text,
       createdAt: messageTimestamp(trace),
       reasoning,
-      partial: trace.event.Partial
+      partial: trace.event.Partial,
+      runId: trace.run_id
     });
   }
 
@@ -135,7 +152,8 @@ export function eventToMessages(trace: RunStreamEvent): Message[] {
         role: "tool_call" as const,
         author: toolCallAuthor(call),
         content: formatToolCall(call),
-        createdAt: messageTimestamp(trace)
+        createdAt: messageTimestamp(trace),
+        runId: trace.run_id
       }))
     );
   }
@@ -146,7 +164,8 @@ export function eventToMessages(trace: RunStreamEvent): Message[] {
       role: "tool_result",
       author: toolResultAuthor(content.ToolResult),
       content: formatToolResult(content.ToolResult),
-      createdAt: messageTimestamp(trace)
+      createdAt: messageTimestamp(trace),
+      runId: trace.run_id
     });
   }
 
@@ -204,7 +223,8 @@ function upsertPartialMessage(current: Message[], trace: RunStreamEvent): Messag
         content: text,
         createdAt: messageTimestamp(trace),
         reasoning: reasoning || undefined,
-        partial: true
+        partial: true,
+        runId: trace.run_id
       }
     ];
   }
@@ -219,6 +239,27 @@ function upsertPartialMessage(current: Message[], trace: RunStreamEvent): Messag
     partial: true
   };
   return [...current.slice(0, index), updated, ...current.slice(index + 1)];
+}
+
+function associateUserMessage(current: Message[], runID: string, userMessageID?: string): Message[] {
+  if (!userMessageID) {
+    return current;
+  }
+  return current.map((message) =>
+    message.id === userMessageID && message.runId !== runID ? { ...message, runId: runID } : message
+  );
+}
+
+export function runFailureMessage(trace: RunStreamEvent): string {
+  if (trace.failure?.code !== "tool_execution_unknown") {
+    return trace.failure?.message || trace.error || "Run failed";
+  }
+  const tools = trace.failure.unresolved_tools
+    ?.map((call) => call.name || call.id)
+    .filter(Boolean)
+    .join(", ");
+  const suffix = tools ? ` Unresolved tools: ${tools}.` : "";
+  return `Tool execution status is unknown.${suffix} Studio will not retry these calls automatically. Start a new session or repair the persisted history before running this session again.`;
 }
 
 function partialMessageID(trace: RunStreamEvent): string {

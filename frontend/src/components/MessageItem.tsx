@@ -23,7 +23,8 @@ export function MessageItem({ message }: { message: Message }) {
         className={cn(
           "border-l-[3px]",
           roleStyles[message.role],
-          message.partial && "border-dashed bg-card/70"
+          message.partial && "border-dashed bg-card/70",
+          message.failed && "border-destructive/70 bg-destructive/5"
         )}
       >
         <CardContent className="grid gap-3 p-4">
@@ -31,6 +32,11 @@ export function MessageItem({ message }: { message: Message }) {
             <Badge variant={message.role === "error" ? "destructive" : "secondary"} className="min-w-0 max-w-full truncate">
               {message.author}
             </Badge>
+            {message.failed ? (
+              <Badge variant="destructive" className="shrink-0">
+                Failed · not persisted
+              </Badge>
+            ) : null}
             {timestamp ? (
               <time
                 dateTime={timestamp.iso}

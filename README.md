@@ -43,7 +43,7 @@ This is still a small Studio skeleton, but the main loop is functional:
 - provide a session service for multi-turn runs.
 - discover registered agents through `/api/agents`.
 - run the selected agent through `POST /api/runs`.
-- inspect returned ADK events in the trace panel.
+- inspect ADK events and runtime span records in the trace panel.
 - display assistant messages, reasoning content, tool calls, and tool results
   as separate UI entries.
 - optionally stream live ADK events over SSE when the Studio UI runs an agent.
@@ -51,8 +51,9 @@ This is still a small Studio skeleton, but the main loop is functional:
   inspector, and configurable send shortcut.
 
 The run API keeps the completed JSON response for ordinary clients. Clients that
-send `Accept: text/event-stream` receive live SSE frames as each ADK event is
-produced.
+send `Accept: text/event-stream` receive live SSE frames as ADK events and
+runtime span records are produced. Both transports preserve the shared runtime
+feed order.
 
 ## Build
 
@@ -189,6 +190,20 @@ default. Every ADK event returned by a run is logged at INFO. Use
 `LogLevelDebug`, `LogLevelWarn`, `LogLevelError`, or `LogLevelOff`, or pass a
 custom `*slog.Logger` in `AppConfig.Logger` when embedding Studio.
 
+Studio always collects ADK runtime spans for the trace panel. To fan the same
+spans out to host observability, configure an ADK `trace.Tracer`; Studio
+preserves the context returned by that tracer for downstream spans:
+
+```go
+app := studio.NewApp(studio.AppConfig{
+    Name:   "demo",
+    Tracer: hostTracer,
+})
+```
+
+Leaving `Tracer` nil only disables host-side forwarding; it does not add span
+logs or disable the Studio UI collector.
+
 ## HTTP APIs
 
 - `GET /api/health`: handler health and start time.
@@ -213,7 +228,30 @@ Minimal run request:
 }
 ```
 
-By default the response includes a `run_id`, the active `session_id`, and the
-collected ADK events. Send `Accept: text/event-stream` to receive `event`,
-`partial`, `error`, and `done` SSE frames as the run progresses. Completed JSON
-responses omit partial events.
+By default the response includes a Studio `run_id`, the active `session_id`, and
+the ordered run feed. Send `Accept: text/event-stream` to receive `trace`,
+`event`, `partial`, `error`, and `done` SSE frames as the run progresses.
+Completed JSON responses contain the same runtime trace records and terminal
+frame, but omit partial model events.
+
+`trace` frames use a stable snake-case record with span `phase` (`start`,
+`event`, or `end`), `kind`, timestamp, duration, ADK runtime run/turn/session
+identifiers, and relevant agent, model, tool, event, token, and error fields.
+Tool spans retain `tool_index: 0`. ADK `model.Event` payloads also expose
+`TurnID` and full token usage details.
+
+Terminal responses keep the existing top-level `error` string and HTTP 500
+behavior. The final `error` frame additionally carries a typed `failure` such
+as `run_failed` or `tool_execution_unknown`. Unknown-tool-execution details
+identify the source turn/event and unresolved call IDs/names, but never include
+tool arguments. Runtime and source event IDs use decimal strings so JavaScript
+clients preserve the full 64-bit Snowflake value.
+
+ADK v0.0.10 rolls back every persisted event from an incomplete turn. Studio
+cancels and waits for the runner when an SSE client disconnects or a write
+fails, so that rollback completes before the handler returns. In the UI, a
+failed turn keeps the locally entered user message marked `Failed · not
+persisted`, removes assistant/tool messages from that Studio run, and retains
+the complete attempt, terminal failure, and spans in Trace. Studio never retries
+`tool_execution_unknown` calls automatically; start a new session or repair the
+persisted history before using that session again.

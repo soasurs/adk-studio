@@ -2,6 +2,7 @@ package demo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -52,18 +53,18 @@ func readFile(ctx context.Context, workspaceRoot string, input readFileInput) (r
 
 	requestedPath := strings.TrimSpace(input.Path)
 	if requestedPath == "" {
-		return readFileOutput{}, fmt.Errorf("path is required")
+		return readFileOutput{}, tool.NewFuncError("path is required")
 	}
 	if filepath.IsAbs(requestedPath) {
-		return readFileOutput{}, fmt.Errorf("absolute paths are not allowed")
+		return readFileOutput{}, tool.NewFuncError("absolute paths are not allowed")
 	}
 
 	cleanPath := filepath.Clean(requestedPath)
 	if cleanPath == "." {
-		return readFileOutput{}, fmt.Errorf("path must point to a file")
+		return readFileOutput{}, tool.NewFuncError("path must point to a file")
 	}
 	if cleanPath == ".." || strings.HasPrefix(cleanPath, ".."+string(filepath.Separator)) {
-		return readFileOutput{}, fmt.Errorf("paths outside the read_file root are not allowed")
+		return readFileOutput{}, tool.NewFuncError("paths outside the read_file root are not allowed")
 	}
 
 	maxBytes := input.MaxBytes
@@ -82,14 +83,20 @@ func readFile(ctx context.Context, workspaceRoot string, input readFileInput) (r
 
 	info, err := root.Stat(cleanPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return readFileOutput{}, tool.NewFuncError(fmt.Sprintf("file %q does not exist", cleanPath))
+		}
 		return readFileOutput{}, fmt.Errorf("stat %q: %w", cleanPath, err)
 	}
 	if info.IsDir() {
-		return readFileOutput{}, fmt.Errorf("%q is a directory", cleanPath)
+		return readFileOutput{}, tool.NewFuncError(fmt.Sprintf("%q is a directory", cleanPath))
 	}
 
 	file, err := root.Open(cleanPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return readFileOutput{}, tool.NewFuncError(fmt.Sprintf("file %q does not exist", cleanPath))
+		}
 		return readFileOutput{}, fmt.Errorf("open %q: %w", cleanPath, err)
 	}
 	defer file.Close()

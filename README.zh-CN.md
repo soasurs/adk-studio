@@ -38,14 +38,14 @@ github.com/soasurs/adk Runner + Agent + Tools + Session
 - 配置 session service，用于多轮运行。
 - 通过 `/api/agents` 发现已注册 agent。
 - 通过 `POST /api/runs` 执行选中的 agent。
-- 在 trace 面板里查看返回的 ADK events。
+- 在 trace 面板里查看 ADK events 和运行时 span records。
 - 在 UI 中分别展示 assistant message、reasoning content、tool call 和 tool result。
 - Studio UI 执行 agent 时，可以选择是否通过 SSE 实时接收 ADK events。
 - 使用固定高度的 React 工作台，包含侧边栏控制区、playground、trace inspector，以及可切换的发送快捷键。
 
 run API 会保留普通客户端使用的完整 JSON 响应。发送
-`Accept: text/event-stream` 的客户端会在每个 ADK event 产出时收到实时
-SSE frame。
+`Accept: text/event-stream` 的客户端会在 ADK event 和运行时 span record
+产出时收到实时 SSE frame。两种传输方式都会保留同一条运行时 feed 的顺序。
 
 ## 构建
 
@@ -176,6 +176,20 @@ Studio 默认使用 Go 标准库 `log/slog` 的 text handler，把日志以 INFO
 `LogLevelDebug`、`LogLevelWarn`、`LogLevelError`、`LogLevelOff` 调整等级，也可以在
 `AppConfig.Logger` 里传入自定义 `*slog.Logger`。
 
+Studio 始终会为 Trace 面板收集 ADK 运行时 spans。如果还需要把同一批 spans
+转发给宿主的可观测性系统，可以配置 ADK `trace.Tracer`；Studio 会保留这个
+tracer 返回的 context，继续传给下游 spans：
+
+```go
+app := studio.NewApp(studio.AppConfig{
+    Name:   "demo",
+    Tracer: hostTracer,
+})
+```
+
+`Tracer` 为 nil 只会关闭宿主侧转发，不会额外产生 span 日志，也不会关闭
+Studio UI collector。
+
 ## HTTP APIs
 
 - `GET /api/health`：handler 健康状态和启动时间。
@@ -200,6 +214,26 @@ Studio 默认使用 Go 标准库 `log/slog` 的 text handler，把日志以 INFO
 }
 ```
 
-默认响应里会包含 `run_id`、当前 `session_id` 和收集到的 ADK events。
-发送 `Accept: text/event-stream` 可以在运行过程中实时收到 `event`、`partial`、
-`error` 和 `done` SSE frames。完整 JSON 响应会省略 partial events。
+默认响应里会包含 Studio `run_id`、当前 `session_id` 和有序的 run feed。
+发送 `Accept: text/event-stream` 可以在运行过程中实时收到 `trace`、`event`、
+`partial`、`error` 和 `done` SSE frames。完整 JSON 响应同样包含运行时 trace
+records 和终止 frame，但会省略 partial model events。
+
+`trace` frame 使用稳定的 snake_case 结构，包含 span `phase`（`start`、
+`event` 或 `end`）、`kind`、时间、duration、ADK runtime run/turn/session 标识，
+以及相关的 agent、model、tool、event、token 和 error 字段。tool span 会保留
+`tool_index: 0`。ADK `model.Event` payload 也会同步暴露 `TurnID` 和完整 token
+usage details。
+
+终止响应继续保留顶层 `error` 字符串和 HTTP 500 行为。最后一个 `error` frame
+还会携带类型化 `failure`，例如 `run_failed` 或 `tool_execution_unknown`。
+unknown tool execution 的 details 会包含来源 turn/event 和未决 call 的 ID/name，
+但不会暴露 tool arguments。runtime event ID 和 source event ID 使用十进制字符串，
+避免 JavaScript 客户端丢失 64 位 Snowflake ID 的精度。
+
+ADK v0.0.10 会回滚 incomplete turn 中写入的所有 events。SSE 客户端断开或写入
+失败时，Studio 会取消运行并等待 Runner 退出，确保 handler 返回前完成回滚。
+在 UI 里，失败轮次会保留用户本地输入并标记为 `Failed · not persisted`，移除
+属于该 Studio run 的 assistant/tool 消息，同时在 Trace 中保留完整尝试、终止
+错误和 spans。Studio 不会自动重试 `tool_execution_unknown` calls；应新建
+session，或先修复持久化历史再继续使用原 session。
